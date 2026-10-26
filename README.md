@@ -4,6 +4,10 @@ A low-latency voice bridge for a real room: the **Meta Model API** (Muse Spark, 
 
 Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) — Indie Developer track, **Build for Your World** theme.
 
+## Why
+
+My assistant lives on my phone and on my computer: the same voice and the same memory, everywhere. My studio was the missing place — the room where I spend my days building. This bridge exists so she is present here too: the room that hears her, answers her and shows her.
+
 ## What it does
 
 You say "Hey Muse" in the studio. The room listens, transcribes locally, and sends the text to Muse Spark through the Meta Model API with function calling wired to the room's real tools (wall scenes, voice replies, live data). Spark streams back; the bridge cuts the stream into sentences, speaks the first sentence as soon as it exists, and puts the result on the wall. Every stage of every turn is timed and logged, because for voice in a room, **latency is the product**.
