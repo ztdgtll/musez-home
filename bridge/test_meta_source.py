@@ -14,7 +14,7 @@ import copy
 import json
 import unittest
 
-from .meta_source import MetaAPIError, MetaSource
+from .meta_source import SHORT_OPENER_GUIDANCE, MetaAPIError, MetaSource
 from .tools import TOOL_SCHEMAS, DryRoom
 from .turn import PrintSink, run_turn
 
@@ -86,6 +86,16 @@ class TextTurnTests(unittest.TestCase):
         offered = {t["function"]["name"] for t in body["tools"]}
         self.assertEqual(
             offered, {"set_wall_scene", "get_weather", "say", "escalate"})
+
+
+class SystemPromptTests(unittest.TestCase):
+    def test_system_prompt_carries_the_short_opener_guidance(self):
+        transport = FakeTransport([[content("Listo."), DONE]])
+        source = MetaSource(transport=transport)
+        run(source)
+        system = transport.requests[0]["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn(SHORT_OPENER_GUIDANCE, system["content"])
 
 
 class ToolTurnTests(unittest.TestCase):

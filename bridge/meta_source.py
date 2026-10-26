@@ -37,6 +37,15 @@ DEEP_MODEL = "muse-wonder-1.0"
 MAX_ROUNDS = 5
 TIMEOUT_S = 90
 
+# The bridge starts speaking at the first complete unit of text, so the
+# opener's length is on the latency path: ask for a brief first sentence
+# and the voice starts sooner. The clause-level release in the chunker is
+# the backstop when an opener still runs long.
+SHORT_OPENER_GUIDANCE = (
+    "Open with a short first sentence — one brief clause — then "
+    "continue normally."
+)
+
 SYSTEM_PROMPT = (
     "You are MuseZ, the voice of a smart room. You answer out loud, so "
     "keep every spoken reply to one or two short, plain sentences: no "
@@ -45,7 +54,8 @@ SYSTEM_PROMPT = (
     "(scene titles always in English) and get_weather for weather. When a "
     "request needs planning, weighing options, or several steps of "
     "reasoning, call escalate BEFORE answering: a deeper model will take "
-    "the turn from there."
+    "the turn from there. "
+    + SHORT_OPENER_GUIDANCE
 )
 
 ESCALATE_SCHEMA = {
