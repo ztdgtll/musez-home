@@ -10,22 +10,14 @@ You say "Hey Muse" in the studio. The room listens, transcribes locally, and sen
 
 ## What was built during the hackathon (Oct 26 – Nov 4, 2026)
 
-This is the submission. Everything in this repository was created inside the event window:
-
-- The **bridge**: transcript → Meta Model API (Muse Spark streaming + function calling) → sentence-chunked speech and wall scenes.
+- The **bridge**: transcript → Meta Model API (Muse Spark streaming + function calling) → sentence-chunked speech and wall scenes, with escalation to **Muse Wonder** for turns that need deeper reasoning.
 - The **latency probe and budget**: per-stage timing (first token, first complete sentence, TTS render, playback dispatch) with p50/p95 reporting over real turns.
-- The tool layer that lets Spark act on the room: wall scene control, voice reply dispatch, and live-data tools.
+- The tool layer that lets the models act on the room: wall scene control, voice reply dispatch, and live-data tools.
 - This documentation, the measured results, and the demo.
 
-## Pre-existing infrastructure (NOT part of this submission)
+## The room it runs in
 
-The bridge plugs into a personal studio system that existed before the event and is only the environment it runs in — like a laptop under a hackathon project:
-
-- A Raspberry Pi 5 running a MagicMirror ambient wall (projected) with a state-driven scene page.
-- A local wake-word listener ("Hey Muse") with a USB microphone array and a room speaker.
-- A text-to-speech pipeline and a response watchdog that verifies spoken replies actually play.
-
-None of that is claimed as event work. The demo shows only the layer listed above.
+MuseZ Home plugs into a personal studio its builder has been developing as a long-running project: a Raspberry Pi 5 running a projected ambient wall, a local wake-word listener ("Hey Muse") with a USB microphone array and a room speaker, and a speech pipeline with a watchdog that verifies spoken replies actually play. That system is the stage — a body that already existed. What this event adds is the brain: a dedicated, measured bridge from the room to Meta's Muse models.
 
 ## Architecture
 

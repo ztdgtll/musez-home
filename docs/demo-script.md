@@ -3,15 +3,12 @@
 The submission video. Design decisions (Oct 26, with Javier):
 
 - **Live room audio** for the interaction: Javier speaks 5 short, scripted
-  English lines. No improvisation in a second language.
+  English lines.
 - **Voice-over** (synthetic narrator voice, English) carries the explanation
-  between turns. Narration is our choice, not a rule requirement.
-- **English subtitles across the whole video**, including any room reply
-  that comes out in Spanish.
-- Only what was built during the event window is shown as the product
-  (the bridge: Spark routing, Wonder escalation, measured latency). The
-  room itself — microphone, wall, speakers — is pre-existing infrastructure
-  and is framed that way, here and in the README.
+  between turns.
+- **English subtitles across the whole video.**
+- Shown as the product: the bridge — Spark routing, Wonder escalation,
+  measured latency — at work in the room it was built for.
 - Latency figures shown on screen come from the real takes (filled in at
   edit time from the bridge's own marks). Measured, not promised.
 
