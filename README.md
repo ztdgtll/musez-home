@@ -37,7 +37,7 @@ voice → wake word → local STT → transcript
 | Spark: first complete sentence (streaming) | ≤ 4 s |
 | TTS render, first sentence | ≤ 3 s (measured baseline ~2 s) |
 | Playback dispatch to the room | ≤ 4 s |
-| **Perceived total to first spoken sentence** | **≤ ~12 s** (vs ~24 s for the pre-event chat path) |
+| **Perceived total to first spoken sentence** | **≤ ~12 s** (the pre-event chat path measured a ~51 s median, transcript → first audio, on real usage turns — see `docs/latency-budget.md`) |
 
 Measured results live in `experiments/results/` and are summarized in the demo. If a stage misses its budget, the writeup says so and shows the number.
 

@@ -3,12 +3,17 @@
 ## Why this document exists
 
 Before the event, the room's voice path ran through a general chat/agent
-pipeline. Measured on the real system: ~24 s for a full voice turn on the fast
-path, ~53 s when a reply involved a full web search, and first spoken
-sentence at ~5 s when replies were split into sentences and synthesized in
-parallel. The cost was not in one stage: text-to-speech rendered a typical
-first sentence in ~2 s, while turn processing before dispatch and transport
-to the Pi dominated.
+pipeline. Baseline measured from the room's own turn and watchdog logs
+(Pi 5, 2026-10-23; n = 7 real user turns after excluding ghost wakes and
+ambient captures): transcript sent → first response audio at **p50 50.9 s,
+p95 73.9 s** — almost all of it the agent leg; local playback start added
+~0.2 s. A single fast-path turn measured live on 2026-10-20 came in at
+~24 s: a best case, not the median. The log metric is a floor for
+perceived latency (end of speech precedes the transcript timestamp by a
+few seconds of endpointing and STT). The bridge's numbers are reported on
+the same transcript → first-audio definition, on comparable requests. The
+cost was never in one stage: text-to-speech renders a typical first
+sentence in ~2 s, while turn processing before dispatch dominated.
 
 The bridge attacks those two stages: a direct streaming call to Muse Spark
 with a short fixed prompt and minimal reasoning effort for simple requests,
