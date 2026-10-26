@@ -36,7 +36,23 @@ def run_turn(events, room, sink) -> dict:
     def note(key: str) -> None:
         marks.setdefault(key, (time.perf_counter() - t0) * 1000.0)
 
-    for event in events:
+    # The source is driven with send(): after a tool call, its result goes
+    # back into the generator so a live source can feed it to the model and
+    # stream the continuation. Sources that ignore sent values (the mock)
+    # behave exactly as with plain iteration.
+    iterator = iter(events)
+    send_value = None
+    started = False
+    while True:
+        try:
+            if started and hasattr(iterator, "send"):
+                event = iterator.send(send_value)
+            else:
+                event = next(iterator)
+        except StopIteration:
+            break
+        started = True
+        send_value = None
         kind = event[0]
         if kind == "token":
             note("t_first_token")
@@ -48,6 +64,9 @@ def run_turn(events, room, sink) -> dict:
             result = dispatch(room, name, args)
             marks["tool_calls"].append({"name": name, "args": args, "result": result})
             note("t_first_tool_result")
+            send_value = result
+        elif kind == "note":
+            marks.setdefault("notes", []).append(event[1])
         else:
             raise ValueError(f"unknown event: {event!r}")
     for sentence in chunker.flush():
