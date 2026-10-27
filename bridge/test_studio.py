@@ -20,7 +20,7 @@ import unittest
 from . import wall_apply
 from .studio_room import StudioRoom, condition_es
 from .studio_sink import Respond2Transport, StudioSink, TransportError
-from .studio_turn import pick_turn, playback_status
+from .studio_turn import find_first_play, pick_turn, playback_status
 
 
 class FakeProc:
@@ -184,6 +184,15 @@ class PlaybackStatusTests(unittest.TestCase):
         self.assertEqual(playback_status(self.RID, "", ""), "pending")
         other = "16:31:27 PLAY_SUPPRESSED_OFF owner=resp2-999-1-2 kind=sayseq\n"
         self.assertEqual(playback_status(self.RID, "", other), "pending")
+
+    def test_first_play_parses_against_pi_local_start(self):
+        from datetime import datetime
+
+        t_start = datetime(2026, 10, 27, 18, 1, 5, 796000)
+        log = f"18:01:20.837 PLAY seq-{self.RID}-0.ogg at_offset=.230\n"
+        play = find_first_play(self.RID, t_start, log)
+        self.assertIsNotNone(play)
+        self.assertAlmostEqual((play - t_start).total_seconds(), 15.041, places=2)
 
 
 if __name__ == "__main__":

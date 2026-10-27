@@ -30,6 +30,12 @@ import time
 import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+# sayseq.log timestamps are Pi-local (America/New_York). The runner's
+# own wall clock may be UTC, so log-derived timings are computed
+# against a Pi-local t_start, never the host's local time.
+PI_TZ = ZoneInfo("America/New_York")
 
 from .mock_source import TURNS
 from .studio_room import SSH_CONFIG, SSH_HOST, StudioRoom, mint_turn
@@ -152,7 +158,7 @@ def main(argv=None) -> int:
     sink = StudioSink(Respond2Transport(), turn=turn_id)
     room = StudioRoom(turn_id, speak=sink.say)
 
-    t_start = datetime.now()
+    t_start = datetime.now(PI_TZ).replace(tzinfo=None)  # Pi-local, like the logs
     p_start = time.perf_counter()
     marks = run_turn(TURNS[name](), room, sink)
     title, lines = compose_scene(name, room, sink)
@@ -165,6 +171,7 @@ def main(argv=None) -> int:
     # turn): that is the room's policy, not a bridge failure — observe
     # it, record it, and stop polling early.
     t_first_audio_ms = None
+    play_dt = None
     playback = "no_launch"
     rid = receipt.get("rid")
     if rid:
@@ -177,9 +184,9 @@ def main(argv=None) -> int:
             if status != "pending":
                 playback = status
                 if status == "played":
-                    play = find_first_play(rid, t_start, seq_text)
-                    if play is not None:
-                        t_first_audio_ms = (play - t_start).total_seconds() * 1000.0
+                    play_dt = find_first_play(rid, t_start, seq_text)
+                    if play_dt is not None:
+                        t_first_audio_ms = (play_dt - t_start).total_seconds() * 1000.0
                 break
             time.sleep(1.0)
         if playback == "pending":
@@ -200,6 +207,9 @@ def main(argv=None) -> int:
         "t_first_sentence_ms": marks.get("t_first_sentence"),
         "t_full_ms": marks.get("t_full"),
         "t_first_audio_ms": t_first_audio_ms,
+        "t_start_pi_local": t_start.isoformat(),
+        "play_time_of_day": (play_dt.strftime("%H:%M:%S.%f")[:-3]
+                             if play_dt is not None else None),
         "tool_calls": [tc["name"] for tc in marks["tool_calls"]],
         "sentences": sink.sentences,
         "wall_after": wall,
