@@ -17,6 +17,7 @@ You say "Hey Muse" in the studio. The room listens, transcribes locally, and sen
 - The **bridge**: transcript → Meta Model API (Muse Spark streaming + function calling) → sentence-chunked speech and wall scenes, with escalation to **Muse Wonder** for turns that need deeper reasoning.
 - The **latency probe and budget**: per-stage timing (first token, first complete sentence, TTS render, playback dispatch) with p50/p95 reporting over real turns.
 - The tool layer that lets the models act on the room: wall scene control, voice reply dispatch, and live-data tools.
+- The **studio integration**: the bridge loop driving the room's real surfaces — tool calls that act on the wall through the Pi's guarded state writer, and speech delivered through the studio's existing response transport (same voice, same player) — verified end to end in the room with the mock source while the API credit is pending.
 - This documentation, the measured results, and the demo.
 
 ## The room it runs in
