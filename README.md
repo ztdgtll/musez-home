@@ -4,6 +4,8 @@ A low-latency voice bridge for a real room: the **Meta Model API** (Muse Spark, 
 
 Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) — Indie Developer track, **Build for Your World** theme.
 
+> **Status — Oct 29, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probe run 2026-10-29 — results in `experiments/results/latency-live-2026-10-29.md`. Room integration (listener → bridge) lands Oct 31 – Nov 1.
+
 ## Why
 
 My assistant lives on my phone and on my computer: the same voice and the same memory, everywhere. My studio was the missing place — the room where I spend my days building. This bridge exists so she is present here too: the room that hears her, answers her and shows her.
@@ -17,7 +19,7 @@ You say "Hey Muse" in the studio. The room listens, transcribes locally, and sen
 - The **bridge**: transcript → Meta Model API (Muse Spark streaming + function calling) → sentence-chunked speech and wall scenes, with escalation to **Muse Wonder** for turns that need deeper reasoning.
 - The **latency probe and budget**: per-stage timing (first token, first complete sentence, TTS render, playback dispatch) with p50/p95 reporting over real turns.
 - The tool layer that lets the models act on the room: wall scene control, voice reply dispatch, and live-data tools.
-- The **studio integration**: the bridge loop driving the room's real surfaces — tool calls that act on the wall through the Pi's guarded state writer, and speech delivered through the studio's existing response transport (same voice, same player) — verified end to end in the room with the mock source while the API credit is pending.
+- The **studio integration**: the bridge loop driving the room's real surfaces — tool calls that act on the wall through the Pi's guarded state writer, and speech delivered through the studio's existing response transport (same voice, same player) — verified end to end in the room with the mock source; the live-source wiring is the Oct 31 – Nov 1 step (see Status above).
 - This documentation, the measured results, and the demo.
 
 ## The room it runs in
@@ -42,7 +44,7 @@ voice → wake word → local STT → transcript
 | Spark: first complete sentence (streaming) | ≤ 4 s |
 | TTS render, first sentence | ≤ 3 s (measured baseline ~2 s) |
 | Playback dispatch to the room | ≤ 4 s |
-| **Perceived total to first spoken sentence** | **≤ ~12 s** (the pre-event chat path measured a ~51 s median, transcript → first audio, on real usage turns — see `docs/latency-budget.md`) |
+| **Perceived total to first spoken sentence** | **≤ ~12 s** (baseline, pre-event chat path: median transcript→first audio 50.9 s, n=7, measured 2026-10-23 — see `docs/latency-budget.md`) |
 
 Measured results live in `experiments/results/` and are summarized in the demo. If a stage misses its budget, the writeup says so and shows the number.
 
