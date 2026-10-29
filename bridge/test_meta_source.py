@@ -14,7 +14,7 @@ import copy
 import json
 import unittest
 
-from .meta_source import SHORT_OPENER_GUIDANCE, MetaAPIError, MetaSource
+from .meta_source import MAX_ROUNDS, SHORT_OPENER_GUIDANCE, MetaAPIError, MetaSource
 from .tools import TOOL_SCHEMAS, DryRoom
 from .turn import PrintSink, run_turn
 
@@ -145,6 +145,130 @@ class EscalationTests(unittest.TestCase):
         self.assertTrue(source.last_turn["escalated"])
         self.assertTrue(any("escalated" in n for n in marks["notes"]))
         self.assertEqual(len(sink.sentences), 1)
+
+
+class MixedEscalationTests(unittest.TestCase):
+    def test_escalate_plus_room_call_escalation_wins_and_all_calls_answered(self):
+        # Both calls arrive WITHOUT ids: the source must normalize them.
+        transport = FakeTransport([
+            [
+                content("Te armo el plan... "),
+                tool_delta(0, name="escalate",
+                           arguments='{"reason": "planning"}'),
+                tool_delta(1, name="set_wall_scene",
+                           arguments='{"title": "PLAN"}'),
+                sse({}, finish="tool_calls"),
+                DONE,
+            ],
+            [content("Acá está tu plan del sábado."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "planificá mi sábado")
+        # Escalation won: Spark's room call never ran, and Spark's
+        # drafted text was discarded — the sink hears only Wonder.
+        self.assertEqual(room.actions, [])
+        self.assertTrue(source.last_turn["escalated"])
+        self.assertEqual(sink.sentences, ["Acá está tu plan del sábado."])
+        # The follow-up request's history pairs up: the assistant
+        # message lists both calls under the normalized ids, and BOTH
+        # have a tool response — no call is left unanswered.
+        second = transport.requests[1]
+        self.assertEqual(second["model"], "muse-wonder-1.0")
+        assistant = [m for m in second["messages"]
+                     if m["role"] == "assistant"][-1]
+        ids = [tc["id"] for tc in assistant["tool_calls"]]
+        self.assertEqual(ids, ["call_1_0", "call_1_1"])
+        self.assertTrue(
+            all(tc["function"]["arguments"] for tc in assistant["tool_calls"]))
+        tool_msgs = {m["tool_call_id"]: json.loads(m["content"])
+                     for m in second["messages"] if m["role"] == "tool"}
+        self.assertEqual(set(tool_msgs), set(ids))
+        self.assertTrue(tool_msgs["call_1_0"]["ok"])       # the escalation
+        self.assertFalse(tool_msgs["call_1_1"]["ok"])      # the room call
+        self.assertTrue(tool_msgs["call_1_1"]["deferred"])
+
+
+class TextPlusEscalateTests(unittest.TestCase):
+    def test_text_and_escalate_sink_hears_only_wonder(self):
+        transport = FakeTransport([
+            [
+                content("Respuesta rápida de Spark. "),
+                content("Otra oración de Spark."),
+                tool_delta(0, call_id="e1", name="escalate",
+                           arguments='{"reason": "deep reasoning"}'),
+                sse({}, finish="tool_calls"),
+                DONE,
+            ],
+            [content("Respuesta profunda de Wonder."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "pensalo bien")
+        self.assertEqual(sink.sentences, ["Respuesta profunda de Wonder."])
+        self.assertTrue(source.last_turn["escalated"])
+
+
+class BadToolArgsTests(unittest.TestCase):
+    def test_truncated_arguments_are_not_dispatched(self):
+        transport = FakeTransport([
+            [
+                tool_delta(0, call_id="c1", name="set_wall_scene",
+                           arguments='{"title": "WEA'),
+                sse({}, finish="tool_calls"),
+                DONE,
+            ],
+            [content("Perdón, no pude mostrarlo."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "poné el clima en la pared")
+        # Never coerced to {} and dispatched: the room saw nothing,
+        # and the model got an error result it can correct.
+        self.assertEqual(room.actions, [])
+        self.assertEqual(marks["tool_calls"], [])
+        second = transport.requests[1]
+        tool_msgs = [m for m in second["messages"] if m["role"] == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertEqual(tool_msgs[0]["tool_call_id"], "c1")
+        self.assertFalse(json.loads(tool_msgs[0]["content"])["ok"])
+        self.assertEqual(sink.sentences, ["Perdón, no pude mostrarlo."])
+
+    def test_non_object_arguments_are_not_dispatched(self):
+        transport = FakeTransport([
+            [
+                tool_delta(0, call_id="c1", name="get_weather",
+                           arguments='["today"]'),
+                sse({}, finish="tool_calls"),
+                DONE,
+            ],
+            [content("Sin datos del clima."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "¿qué clima hace?")
+        self.assertEqual(room.actions, [])
+        self.assertEqual(marks["tool_calls"], [])
+        tool_msgs = [m for m in transport.requests[1]["messages"]
+                     if m["role"] == "tool"]
+        self.assertFalse(json.loads(tool_msgs[0]["content"])["ok"])
+
+
+class RoundBudgetTests(unittest.TestCase):
+    def test_budget_brake_fires_at_the_top_of_the_loop(self):
+        tool_round = [
+            tool_delta(0, call_id="w1", name="get_weather", arguments="{}"),
+            sse({}, finish="tool_calls"),
+            DONE,
+        ]
+        transport = FakeTransport(
+            [list(tool_round) for _ in range(MAX_ROUNDS)]
+            + [[content("Respuesta final con lo que hay."), DONE]])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "¿y el clima?")
+        # MAX_ROUNDS tool rounds + exactly one final no-tools answer.
+        # (FakeTransport raises if the source asks for one more.)
+        self.assertEqual(len(transport.requests), MAX_ROUNDS + 1)
+        self.assertNotIn("tools", transport.requests[-1])
+        self.assertEqual(source.last_turn["rounds"], MAX_ROUNDS)
+        self.assertEqual(sink.sentences,
+                         ["Respuesta final con lo que hay."])
 
 
 class ErrorTests(unittest.TestCase):

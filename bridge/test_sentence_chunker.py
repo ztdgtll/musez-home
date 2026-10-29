@@ -115,6 +115,55 @@ class FirstChunkClauseCutTests(unittest.TestCase):
         self.assertEqual(chunker.feed(" " + last) + chunker.flush(), [text])
 
 
+class SplitTokenGuardTests(unittest.TestCase):
+    """A sentence boundary decision that depends on the NEXT delta
+    must wait for it: decimals and abbreviations split across deltas
+    ("26." | "5 grados", "e." | "g.") never close a sentence early."""
+
+    def feed_two(self, text: str, k: int) -> list[str]:
+        chunker = SentenceChunker()
+        out = chunker.feed(text[:k])
+        out += chunker.feed(text[k:])
+        out += chunker.flush()
+        return out
+
+    def test_decimal_point_split_at_every_boundary(self):
+        sentence = "Quedan 26.5 grados de margen."
+        for k in range(1, len(sentence)):
+            self.assertEqual(self.feed_two(sentence, k), [sentence],
+                             f"split at {k}")
+
+    def test_decimal_comma_split_at_every_boundary(self):
+        sentence = "Quedan 26,5 grados de margen."
+        for k in range(1, len(sentence)):
+            self.assertEqual(self.feed_two(sentence, k), [sentence],
+                             f"split at {k}")
+
+    def test_abbreviation_dr_split_at_every_boundary(self):
+        sentence = "El Dr. Psathakis ya salió."
+        for k in range(1, len(sentence)):
+            self.assertEqual(self.feed_two(sentence, k), [sentence],
+                             f"split at {k}")
+
+    def test_abbreviation_eg_split_at_every_boundary(self):
+        sentence = "Traé frutas, e.g. manzanas, hoy."
+        for k in range(1, len(sentence)):
+            self.assertEqual(self.feed_two(sentence, k), [sentence],
+                             f"split at {k}")
+
+    def test_decimal_split_with_space_leading_delta(self):
+        chunker = SentenceChunker()
+        self.assertEqual(chunker.feed("Quedan 26."), [])
+        self.assertEqual(chunker.feed(" 5 grados de margen."),
+                         ["Quedan 26. 5 grados de margen."])
+
+    def test_plain_sentence_still_closes_immediately(self):
+        # The hold applies only to ambiguous tokens: an ordinary
+        # sentence-final dot at the end of a delta closes at once.
+        chunker = SentenceChunker()
+        self.assertEqual(chunker.feed("Llegamos."), ["Llegamos."])
+
+
 class NumberGuardTests(unittest.TestCase):
     def test_decimals_and_thousands_survive_the_clause_cut(self):
         text = ("The full setup costs 1,500 dollars in total, including "

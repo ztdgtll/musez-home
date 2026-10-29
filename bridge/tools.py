@@ -29,8 +29,16 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Current weather and short forecast for the home location (Tamarac, FL).",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "Weather for the home location (Tamarac, FL): today plus a 7-day forecast, with hourly precipitation probability for one date.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Optional date (YYYY-MM-DD) for the hourly precipitation detail; defaults to today.",
+                    },
+                },
+            },
         },
     },
     {
@@ -58,18 +66,37 @@ class DryRoom:
         self.actions.append({"wall": title, "line1": line1, "line2": line2})
         return {"ok": True, "shown": title}
 
-    def get_weather(self) -> dict:
-        self.actions.append({"weather_lookup": True})
-        return {"temp_c": 29, "condition": "soleado", "note": "dry-run sample data"}
+    def get_weather(self, date: str = None) -> dict:
+        self.actions.append({"weather_lookup": True, "date": date})
+        return {"temp_c": 29, "condition": "soleado",
+                "note": "dry-run sample data",
+                "forecast": [], "hourly_precipitation": None}
 
     def say(self, text: str) -> dict:
         self.actions.append({"say": text})
         return {"ok": True}
 
 
+_TOOL_NAMES = {t["function"]["name"] for t in TOOL_SCHEMAS}
+
+
 def dispatch(room, name: str, args: dict) -> dict:
-    """Route one tool call to the room. Unknown tools fail loudly."""
+    """Route one tool call to the room. Never raises.
+
+    Unknown tools, malformed arguments and room failures all come back
+    as {"ok": False, "error": ...} — a result the model can react to —
+    instead of propagating and killing the turn mid-stream.
+    """
+    if name not in _TOOL_NAMES:
+        return {"ok": False, "error": f"unknown tool: {name}"}
     fn = getattr(room, name, None)
-    if fn is None:
-        raise ValueError(f"unknown tool: {name}")
-    return fn(**args)
+    if not callable(fn):
+        return {"ok": False, "error": f"unknown tool: {name}"}
+    if not isinstance(args, dict):
+        return {"ok": False,
+                "error": f"tool arguments must be a JSON object, "
+                         f"got {type(args).__name__}"}
+    try:
+        return fn(**args)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}

@@ -34,6 +34,31 @@ class TransportError(RuntimeError):
     """The response transport failed; nothing was played."""
 
 
+class LaunchUnknownError(TransportError):
+    """respond2 exited 0 but its LAUNCHED line could not be parsed.
+
+    The response may or may not be playing: this is terminal. Never
+    re-dispatch blind — verify against the Pi's sayseq/playgate logs
+    first, or the room could hear the turn twice."""
+
+
+# The response travels as ONE argv element; cap it well below any
+# exec limit. Spoken replies are one or two sentences, so the cap
+# only ever bites on a runaway generation — and says so, out loud.
+MAX_TEXT_CHARS = 4000
+TRUNCATION_SENTENCE = "Respuesta recortada por longitud."
+TRANSPORT_TIMEOUT_S = 45
+
+
+def _cap_text(text: str) -> str:
+    if len(text) <= MAX_TEXT_CHARS:
+        return text
+    budget = MAX_TEXT_CHARS - len(TRUNCATION_SENTENCE) - 1
+    cut = text.rfind(" ", 0, budget)
+    head = text[: cut if cut > 0 else budget].rstrip()
+    return f"{head} {TRUNCATION_SENTENCE}"
+
+
 class Respond2Transport:
     """Invoke respond2.sh once per turn: (title, line1, line2, text).
 
@@ -46,24 +71,33 @@ class Respond2Transport:
         self.script = script or os.environ.get("BRIDGE_RESPOND2_PATH", DEFAULT_RESPOND2)
         self._run = runner or (
             lambda argv, env: subprocess.run(
-                argv, env=env, capture_output=True, text=True, timeout=300
+                argv, env=env, capture_output=True, text=True,
+                timeout=TRANSPORT_TIMEOUT_S
             )
         )
 
     def __call__(self, title: str, lines: list, text: str, turn) -> dict:
         line1 = lines[0] if len(lines) > 0 else ""
         line2 = lines[1] if len(lines) > 1 else ""
-        env = dict(os.environ)
+        # The bridge's API key is not the room's business: respond2
+        # gets the environment minus META_API_KEY.
+        env = {k: v for k, v in os.environ.items() if k != "META_API_KEY"}
         if turn is not None:
             env["RESPOND_TURN"] = str(turn)
-        proc = self._run([self.script, title, line1, line2, text], env)
+        try:
+            proc = self._run(
+                [self.script, title, line1, line2, _cap_text(text)], env)
+        except subprocess.TimeoutExpired as e:
+            raise TransportError(
+                f"respond2 timed out after {TRANSPORT_TIMEOUT_S} s") from e
         if proc.returncode != 0:
             raise TransportError(
                 f"respond2 exited {proc.returncode}: {(proc.stderr or '').strip()[-300:]}"
             )
         m = _LAUNCHED_RE.search(proc.stdout or "")
         if not m:
-            raise TransportError(f"respond2 did not confirm a launch: {proc.stdout!r}")
+            raise LaunchUnknownError(
+                f"respond2 did not confirm a launch: {proc.stdout!r}")
         return {"rid": m.group(1), "turn": m.group(2), "pid": int(m.group(3))}
 
 
@@ -102,6 +136,12 @@ class StudioSink:
             self.receipt = {"rid": None, "skipped": "no sentences"}
             return self.receipt
         text = " ".join(self.sentences)
-        self.receipt = self.transport(self.title, self.lines, text, self.turn)
+        try:
+            self.receipt = self.transport(self.title, self.lines, text, self.turn)
+        except LaunchUnknownError:
+            # Terminal receipt: the response may be playing, so a
+            # later flush() returns this instead of dispatching again.
+            self.receipt = {"rid": None, "launch_unknown": True}
+            raise
         self.events.append((time.perf_counter(), "flush_done"))
         return self.receipt

@@ -26,6 +26,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 from datetime import datetime, timedelta
@@ -38,9 +39,14 @@ from zoneinfo import ZoneInfo
 PI_TZ = ZoneInfo("America/New_York")
 
 from .mock_source import TURNS
-from .studio_room import SSH_CONFIG, SSH_HOST, StudioRoom, mint_turn
-from .studio_sink import Respond2Transport, StudioSink
+from .studio_room import SSH_CONFIG, SSH_HOST, HourlyWxRunner, StudioRoom, mint_turn
+from .studio_sink import Respond2Transport, StudioSink, TransportError
 from .turn import run_turn
+
+# A turn that cannot finish inside this budget is recorded as failed
+# and its partial sentences are still flushed: the room hears what
+# exists instead of hanging in silence while a stream drips.
+TURN_DEADLINE_S = 20.0
 
 RESULTS_DEFAULT = (
     Path(__file__).resolve().parent.parent
@@ -84,16 +90,25 @@ def _truncate(text: str, limit: int = 90) -> str:
 def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
     """The answer's wall scene: the turn's own wall action wins; a
     weather result composes from the real data; otherwise the spoken
-    sentences themselves summarize (mock-grade scene for knowledge)."""
+    sentences themselves summarize (mock-grade scene for knowledge).
+
+    None-safe by construction: any weather field the feed left null
+    is simply left out of the line — composing the scene must never
+    crash after the stream and take the spoken answer down with it."""
     if room.wall_scenes:
         last = room.wall_scenes[-1]
         return last["title"], last["lines"]
     if room.weather is not None:
         w = room.weather
-        line1 = f"Tamarac · {w['condition']}"
-        line2 = (f"Máx {w['temp_max_f']:.0f} °F · Mín {w['temp_min_f']:.0f} °F"
-                 f" · Lluvia {w['precip_prob_max']:.0f}%")
-        return "Tamarac weather", [line1, line2]
+        line1 = f"Tamarac · {w.get('condition') or 'sin datos'}"
+        parts = []
+        if w.get("temp_max_f") is not None:
+            parts.append(f"Máx {w['temp_max_f']:.0f} °F")
+        if w.get("temp_min_f") is not None:
+            parts.append(f"Mín {w['temp_min_f']:.0f} °F")
+        if w.get("precip_prob_max") is not None:
+            parts.append(f"Lluvia {w['precip_prob_max']:.0f}%")
+        return "Tamarac weather", [line1, " · ".join(parts)]
     if name == "knowledge":
         lines = [_truncate(s) for s in sink.sentences[:2]]
         return "Raspberry Pi", lines
@@ -135,6 +150,31 @@ def read_wall_state(runner=None) -> dict:
     return {k: state.get(k) for k in ("scene", "avatar", "title", "lines", "turn", "phase")}
 
 
+def _run_with_deadline(fn, deadline_s: float):
+    """Run `fn` on a daemon thread; return (value, None) on success,
+    re-raise its exception, or return (None, TimeoutError) if it is
+    still running at the deadline. The abandoned thread is a daemon:
+    it can append a late sentence to the sink, but it cannot block
+    the flush of what the turn already produced."""
+    box: dict = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # ferried to the calling thread
+            box["error"] = e
+
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    th.join(deadline_s)
+    if th.is_alive():
+        return None, TimeoutError(
+            f"turn exceeded the {deadline_s:.0f} s deadline")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value"), None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="One bridge turn in the real room (mock source).")
     ap.add_argument("transcript", nargs="?", help="transcript text; stdin if omitted")
@@ -156,14 +196,36 @@ def main(argv=None) -> int:
               "playgate will suppress playback (OFF-hours policy). The "
               "pipeline stages still run.", file=sys.stderr)
     sink = StudioSink(Respond2Transport(), turn=turn_id)
-    room = StudioRoom(turn_id, speak=sink.say)
+    room = StudioRoom(turn_id, speak=sink.say, hourly_runner=HourlyWxRunner())
 
     t_start = datetime.now(PI_TZ).replace(tzinfo=None)  # Pi-local, like the logs
     p_start = time.perf_counter()
-    marks = run_turn(TURNS[name](), room, sink)
+    # The turn runs under a deadline and its outcome is ALWAYS
+    # recorded — including transport failures. (The results file used
+    # to contain only successes: a turn whose flush raised vanished
+    # without a trace.)
+    marks: dict = {"tool_calls": []}
+    turn_error = None
+    deadline_exceeded = False
+    try:
+        marks, err = _run_with_deadline(
+            lambda: run_turn(TURNS[name](), room, sink), TURN_DEADLINE_S)
+        if err is not None:
+            deadline_exceeded = True
+            turn_error = f"deadline: {err}"
+            marks = {"tool_calls": [],
+                     "t_full": TURN_DEADLINE_S * 1000.0}
+    except Exception as e:
+        turn_error = f"{type(e).__name__}: {e}"
     title, lines = compose_scene(name, room, sink)
     sink.set_scene(title, lines)
-    receipt = sink.flush()
+    receipt = sink.receipt
+    try:
+        receipt = sink.flush()
+    except TransportError as e:
+        if turn_error is None:
+            turn_error = f"{type(e).__name__}: {e}"
+        receipt = sink.receipt
 
     # transcript -> first audio, the repo's standing definition,
     # read back from the player's own log on the Pi. The room's
@@ -173,8 +235,12 @@ def main(argv=None) -> int:
     t_first_audio_ms = None
     play_dt = None
     playback = "no_launch"
-    rid = receipt.get("rid")
-    if rid:
+    rid = receipt.get("rid") if receipt else None
+    if receipt and receipt.get("launch_unknown"):
+        playback = "launch_unknown"
+    elif turn_error is not None:
+        playback = "error"
+    elif rid:
         gate_cmd = (f"grep {rid} {PLAYGATE_LOG} | tail -n 3"
                     if _RID_STRICT_RE.match(rid) else "true")
         playback = "pending"
@@ -203,6 +269,8 @@ def main(argv=None) -> int:
         "turn_id": turn_id,
         "rid": rid,
         "playback": playback,
+        "turn_error": turn_error,
+        "deadline_exceeded": deadline_exceeded,
         "t_first_token_ms": marks.get("t_first_token"),
         "t_first_sentence_ms": marks.get("t_first_sentence"),
         "t_full_ms": marks.get("t_full"),
@@ -229,11 +297,13 @@ def main(argv=None) -> int:
                  else f"none — playback: {playback}")
     print(f"  rid: {rid} | first sentence at "
           f"{marks.get('t_first_sentence', 0):.0f} ms | full stream "
-          f"{marks['t_full']:.0f} ms | first audio: {audio_txt}")
+          f"{marks.get('t_full', 0):.0f} ms | first audio: {audio_txt}")
+    if turn_error is not None:
+        print(f"  turn error: {turn_error}")
     print(f"  wall: scene={wall.get('scene')} title={wall.get('title')!r} "
           f"lines={wall.get('lines')} turn={wall.get('turn')} phase={wall.get('phase')}")
     print(f"  wall-clock total: {(time.perf_counter() - p_start) * 1000:.0f} ms")
-    return 0
+    return 1 if turn_error is not None else 0
 
 
 if __name__ == "__main__":

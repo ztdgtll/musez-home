@@ -183,20 +183,46 @@ class MetaSource:
         ]
         rounds = 0
         while True:
+            # Round budget checked at the top of EVERY iteration, so no
+            # branch (escalation included) can loop past it: at the cap
+            # the model answers with what it has, without tools.
+            if rounds >= MAX_ROUNDS:
+                messages.append({
+                    "role": "system",
+                    "content": "Tool budget reached. Answer now, briefly, "
+                               "with what you have.",
+                })
+                gen = self._post_stream(model, messages, [])
+                for event in gen:
+                    if event[0] != "_round_end":
+                        yield event
+                break
             rounds += 1
             offered = list(tools)
-            if model == self.fast_model and not escalated:
+            escalate_offered = model == self.fast_model and not escalated
+            if escalate_offered:
                 offered = offered + [ESCALATE_SCHEMA]
+            # While `escalate` is on the table, the round's text is
+            # buffered, not streamed: if the round ends in an escalation,
+            # Spark's draft is discarded and the room hears only the deep
+            # model's answer — never two contradictory replies.
+            buffered: list = []
             round_end = None
             gen = self._post_stream(model, messages, offered)
             for event in gen:
                 if event[0] == "_round_end":
                     round_end = event[1]
+                elif escalate_offered:
+                    buffered.append(event)
                 else:
                     yield event
             calls = (round_end or {}).get("calls", [])
-            if not calls:
-                break
+            # One normalized id per call, reused verbatim in the
+            # assistant message and in every tool response: the API
+            # rejects a follow-up request whose tool calls and tool
+            # results do not pair up by id.
+            for i, c in enumerate(calls):
+                c["tool_id"] = c["id"] or f"call_{rounds}_{i}"
             # split room calls from an escalation request
             room_calls, escalation = [], None
             for call in calls:
@@ -204,56 +230,88 @@ class MetaSource:
                     escalation = call
                 else:
                     room_calls.append(call)
-            assistant_msg = {
-                "role": "assistant",
-                "content": (round_end or {}).get("text") or None,
-                "tool_calls": [
-                    {"id": c["id"] or f"call_{i}", "type": "function",
-                     "function": {"name": c["name"], "arguments": c["args"]}}
-                    for i, c in enumerate(calls)
-                ],
-            }
-            messages.append(assistant_msg)
-            if escalation is not None and not room_calls:
+            if escalation is not None:
+                # Escalation wins. Room calls from the same round are
+                # NOT dispatched (the deep model re-decides from a clean
+                # slate), but each still gets its tool response below —
+                # a call is never left unanswered in the history.
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": (round_end or {}).get("text") or None,
+                    "tool_calls": [
+                        {"id": c["tool_id"], "type": "function",
+                         "function": {"name": c["name"],
+                                      "arguments": c["args"] or "{}"}}
+                        for c in calls
+                    ],
+                }
+                messages.append(assistant_msg)
                 try:
                     reason = json.loads(escalation["args"] or "{}").get(
                         "reason", "")
                 except ValueError:
                     reason = ""
                 messages.append({
-                    "role": "tool", "tool_call_id": escalation["id"],
+                    "role": "tool", "tool_call_id": escalation["tool_id"],
                     "content": json.dumps(
                         {"ok": True, "note": "deeper model has the turn"}),
                 })
+                for call in room_calls:
+                    messages.append({
+                        "role": "tool", "tool_call_id": call["tool_id"],
+                        "content": json.dumps({
+                            "ok": False, "deferred": True,
+                            "error": "not run: the turn escalated to the "
+                                     "deeper model first; re-issue the "
+                                     "call if it is still needed",
+                        }),
+                    })
                 model = self.deep_model
                 escalated = True
                 yield ("note", f"escalated to {self.deep_model}: {reason}")
                 continue
+            # No escalation: release the round's buffered text, in order.
+            for event in buffered:
+                yield event
+            if not calls:
+                break
+            assistant_msg = {
+                "role": "assistant",
+                "content": (round_end or {}).get("text") or None,
+                "tool_calls": [
+                    {"id": c["tool_id"], "type": "function",
+                     "function": {"name": c["name"],
+                                  "arguments": c["args"] or "{}"}}
+                    for c in calls
+                ],
+            }
+            messages.append(assistant_msg)
             for call in room_calls:
+                args = None
                 try:
-                    args = json.loads(call["args"] or "{}")
+                    parsed = json.loads(call["args"] or "{}")
+                    if isinstance(parsed, dict):
+                        args = parsed
                 except ValueError:
+                    args = None
+                if args is None:
+                    # Malformed arguments are never dispatched as {}:
+                    # the model gets an error result it can correct.
                     yield ("note", f"bad tool arguments for {call['name']}")
-                    args = {}
-                result = yield ("tool_call", call["name"], args)
+                    result = {
+                        "ok": False,
+                        "error": "tool arguments were not a valid JSON "
+                                 "object; re-issue the call with valid "
+                                 "JSON arguments",
+                    }
+                else:
+                    result = yield ("tool_call", call["name"], args)
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": call["id"] or call["name"],
+                    "tool_call_id": call["tool_id"],
                     "content": json.dumps(result, ensure_ascii=False,
                                           default=str),
                 })
-            if rounds >= MAX_ROUNDS:
-                messages.append({
-                    "role": "system",
-                    "content": "Tool budget reached. Answer now, briefly, "
-                               "with what you have.",
-                })
-                model_tools: list = []
-                gen = self._post_stream(model, messages, model_tools)
-                for event in gen:
-                    if event[0] != "_round_end":
-                        yield event
-                break
         self.last_turn = {
             "model_final": model,
             "escalated": escalated,

@@ -98,14 +98,37 @@ class SentenceChunker:
                 continue
             if ch == ".":
                 # Abbreviation guard: word before the dot is a known abbrev.
+                # (The scan includes digits so a split decimal's integer
+                # part — "26" in "26." — is visible to the guard below.)
                 start = i - 1
-                while start >= 0 and (text[start].isalpha() or text[start] == "."):
+                while start >= 0 and (text[start].isalnum() or text[start] == "."):
                     start -= 1
                 word = text[start + 1 : i].lower()
                 if word in _ABBREVIATIONS:
                     continue
-                # Decimal numbers (e.g. 3.5) never reach here: the next char
-                # would be a digit, not whitespace — handled above.
+                if word.isdigit():
+                    # A decimal can be split across deltas ("26." |
+                    # "5 grados", "26." | " 5 grados"): when a digit
+                    # follows the whitespace, the dot belongs to the
+                    # number; at end-of-buffer the verdict is not in
+                    # yet — hold the close for the next delta (or
+                    # flush(), which forces the remainder out whole).
+                    j = i + 1
+                    while j < len(text) and text[j].isspace():
+                        j += 1
+                    if j >= len(text):
+                        return None
+                    if text[j].isdigit():
+                        continue
+                elif i + 1 == len(text) and (
+                    len(word) <= 1
+                    or any(a.startswith(word) and a != word
+                           for a in _ABBREVIATIONS)
+                ):
+                    # Buffer-final dot after a lone letter or an
+                    # abbreviation prefix ("e." | "g."): undecidable
+                    # until more text arrives — hold the close.
+                    return None
             return i
         return None
 
