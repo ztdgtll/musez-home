@@ -106,9 +106,12 @@ class StudioSink:
 
     `say()` appends sentences in the order the chunker closes them.
     `flush()` — called by the runner once the turn's stream ends —
-    speaks the whole turn through the transport, once. The wall scene
-    (title + up to two lines) can be set any time before flush; the
-    runner composes it from the turn's tool results.
+    speaks the whole turn through the transport, once, and that one
+    dispatch is also the turn's only wall write: the scene (title +
+    up to two lines) is set before flush, composed by the runner from
+    the turn's scene candidate if it recorded one, else from the
+    weather result, else from the first spoken sentences themselves —
+    the wall's lines read as her voice, never as a mid-turn draft.
     """
 
     def __init__(self, transport, turn=None, title: str = "", lines=()):
@@ -121,8 +124,14 @@ class StudioSink:
         self.receipt = None
 
     def set_scene(self, title: str, lines) -> None:
+        lines = list(lines)
+        if len(lines) > 2:
+            # The transport speaks exactly two lines; accepting more
+            # would silently drop the rest. Refuse loudly instead.
+            raise ValueError(
+                f"a wall scene takes at most 2 lines; got {len(lines)}")
         self.title = title
-        self.lines = list(lines)
+        self.lines = lines
 
     def say(self, sentence: str) -> None:
         if not self.sentences:

@@ -13,13 +13,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "set_wall_scene",
-            "description": "Show a scene on the room's wall display: a title and up to two lines of content.",
+            "description": "Show a scene on the room's wall display: a title and up to two lines of content. The scene is queued and lands on the wall together with your spoken answer.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Scene title, in English."},
-                    "line1": {"type": "string"},
-                    "line2": {"type": "string"},
+                    "title": {"type": "string", "description": "Scene title, in English, at most 24 characters, single line."},
+                    "line1": {"type": "string", "description": "At most 48 characters, single line."},
+                    "line2": {"type": "string", "description": "At most 48 characters, single line."},
                 },
                 "required": ["title"],
             },

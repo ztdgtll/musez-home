@@ -2,12 +2,16 @@
 
 Same dispatch contract as `DryRoom` (tools.py), against the live room:
 
-- `set_wall_scene` writes through the Pi's `setstate.py` — the wall's
-  only sanctioned write path — via the bridge's Pi-side helper
-  (wall_apply.py, deployed at ~/bridge/ on the Pi). One fixed ssh
-  command; all content travels as JSON on stdin. Guard rejections
-  (setstate exit 4) are reported in the tool result and never retried:
-  a rejected write stays rejected.
+- `set_wall_scene` validates the scene against the wall's closed
+  design budget and records it as the turn's scene CANDIDATE — it
+  never writes the wall itself. The turn's single wall write ships
+  with the spoken answer at flush time: the sink transport carries
+  the final title+lines and the player writes them through the Pi's
+  `setstate.py` (the wall's only sanctioned write path). The wall
+  therefore never shows a mid-turn draft that the voice then
+  corrects. An invalid scene comes back as an {"ok": False} result
+  naming the limit it broke, and the rejection is kept on the room
+  (`wall_rejections`) so the turn record does not lose it.
 - `get_weather` reads the same Open-Meteo feed (Tamarac, FL) the
   studio's fast path uses, via fastwx.sh: today plus a 7-day forecast,
   with hourly precipitation probability for one date from the same
@@ -17,10 +21,9 @@ Same dispatch contract as `DryRoom` (tools.py), against the live room:
   spoken in order, inside the same turn, not as a rival response.
 
 Phase discipline mirrors the listener's ladder (1 listening, 2
-processing, 3 thinking, 4 answer, 5 home): a tool scene written
-mid-turn rides at phase 3 under the turn's id; the turn's spoken answer
-(the player, via the sink transport) writes phase 4 under the same id
-and stays ahead of it.
+processing, 3 thinking, 4 answer, 5 home): nothing the bridge does
+mid-turn touches the wall — the answer's scene lands exactly once,
+at phase 4 under the turn's id, together with the voice.
 """
 
 from __future__ import annotations
@@ -36,7 +39,39 @@ WALL_APPLY_CMD = "python3 /home/ztdgtll/bridge/wall_apply.py"
 MINT_TURN_CMD = "python3 /home/ztdgtll/pared/setstate.py --mint-turn"
 DEFAULT_FASTWX = os.path.expanduser("~/workspace/studio/fastwx.sh")
 
-WALL_PHASE_TOOL = 3  # mid-turn; the spoken answer writes phase 4
+# The wall's closed design budget for one scene: an English title
+# that never wraps, at most two lines that stay inside the disc.
+# The Pi-side helper (wall_apply.py) enforces the same limits before
+# any setstate write; the two copies must stay in step.
+SCENE_TITLE_MAX = 24
+SCENE_LINE_MAX = 48
+SCENE_MAX_LINES = 2
+
+
+def scene_problem(title, lines) -> str | None:
+    """Why a wall scene is not displayable, or None if it fits.
+
+    Every message NAMES the limit it breaks, so a model whose scene
+    is rejected can shorten and retry instead of guessing."""
+    if not isinstance(title, str):
+        return "scene title must be text"
+    if "\n" in title or "\r" in title:
+        return "scene title must be a single line (no newlines)"
+    if len(title) > SCENE_TITLE_MAX:
+        return (f"scene title is {len(title)} characters; "
+                f"the limit is {SCENE_TITLE_MAX}")
+    if len(lines) > SCENE_MAX_LINES:
+        return (f"a scene takes at most {SCENE_MAX_LINES} lines; "
+                f"got {len(lines)}")
+    for line in lines:
+        if not isinstance(line, str):
+            return "scene lines must be text"
+        if "\n" in line or "\r" in line:
+            return "scene lines must be single lines (no newlines)"
+        if len(line) > SCENE_LINE_MAX:
+            return (f"scene line is {len(line)} characters; "
+                    f"the limit is {SCENE_LINE_MAX}")
+    return None
 
 # WMO weathercode -> Spanish condition, the vocabulary the room speaks.
 WMO_CONDITIONS_ES = {
@@ -193,32 +228,35 @@ def _hourly_for_date(hourly, date: str):
 class StudioRoom:
     """The bridge's Room against the real studio. One instance per turn."""
 
-    def __init__(self, turn: int, wall_runner=None, weather_runner=None,
+    def __init__(self, turn: int, weather_runner=None,
                  speak=None, hourly_runner=None):
         self.turn = turn
-        self._wall = wall_runner or SshJsonRunner(WALL_APPLY_CMD)
         self._weather = weather_runner or FastWxRunner()
         self._hourly = hourly_runner  # None = no hourly detail available
         self._speak = speak
+        # Scene candidates recorded by set_wall_scene (validated, in
+        # call order; the runner composes the turn's ONE final scene
+        # from the last one) and the scenes validation turned away.
         self.wall_scenes: list[dict] = []
+        self.wall_rejections: list[dict] = []
         self.weather = None
 
     def set_wall_scene(self, title: str, line1: str = "", line2: str = "") -> dict:
+        """Record the turn's scene candidate. Does NOT write the wall:
+        the single write happens at flush time, carrying the final
+        scene together with the spoken answer — a mid-turn write
+        would let the wall show a draft and then change its answer
+        in public. An invalid scene is rejected with the limit it
+        broke (so the model can shorten and retry) and kept in
+        `wall_rejections` for the turn record."""
         lines = [x for x in (line1, line2) if x]
-        payload = {
-            "turn": self.turn,
-            "phase": WALL_PHASE_TOOL,
-            "kv": {"scene": "answer", "avatar": "working",
-                   "title": title, "lines": lines},
-        }
-        res = self._wall(payload)
-        if res.get("applied"):
-            self.wall_scenes.append({"title": title, "lines": lines})
-            return {"ok": True, "shown": title}
-        # Guard rejection (rc 4), lock timeout (rc 3) or transport
-        # failure: reported, never retried — a dropped write stays dropped.
-        return {"ok": False, "shown": None, "rc": res.get("rc"),
-                "rejected": res.get("rc") == 4}
+        problem = scene_problem(title, lines)
+        if problem is not None:
+            self.wall_rejections.append(
+                {"title": title, "lines": lines, "error": problem})
+            return {"ok": False, "error": problem}
+        self.wall_scenes.append({"title": title, "lines": lines})
+        return {"ok": True, "queued": title}
 
     def get_weather(self, date: str = None) -> dict:
         """Today's summary (top level, as always) plus a labeled 7-day

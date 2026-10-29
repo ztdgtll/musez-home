@@ -39,7 +39,14 @@ from zoneinfo import ZoneInfo
 PI_TZ = ZoneInfo("America/New_York")
 
 from .mock_source import TURNS
-from .studio_room import SSH_CONFIG, SSH_HOST, HourlyWxRunner, StudioRoom, mint_turn
+from .studio_room import (
+    SCENE_LINE_MAX,
+    SSH_CONFIG,
+    SSH_HOST,
+    HourlyWxRunner,
+    StudioRoom,
+    mint_turn,
+)
 from .studio_sink import Respond2Transport, StudioSink, TransportError
 from .turn import run_turn
 
@@ -88,9 +95,12 @@ def _truncate(text: str, limit: int = 90) -> str:
 
 
 def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
-    """The answer's wall scene: the turn's own wall action wins; a
-    weather result composes from the real data; otherwise the spoken
-    sentences themselves summarize (mock-grade scene for knowledge).
+    """The answer's ONE wall scene, composed at flush time: the
+    turn's own scene candidate wins; a weather result composes from
+    the real data; otherwise the first spoken sentences themselves
+    are the lines (the wall reads as her voice), cut to the design
+    budget. This is the only scene the turn ever ships — the tool
+    call recorded a candidate, it did not write a draft.
 
     None-safe by construction: any weather field the feed left null
     is simply left out of the line — composing the scene must never
@@ -109,9 +119,9 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
         if w.get("precip_prob_max") is not None:
             parts.append(f"Lluvia {w['precip_prob_max']:.0f}%")
         return "Tamarac weather", [line1, " · ".join(parts)]
-    if name == "knowledge":
-        lines = [_truncate(s) for s in sink.sentences[:2]]
-        return "Raspberry Pi", lines
+    if sink.sentences:
+        lines = [_truncate(s, SCENE_LINE_MAX) for s in sink.sentences[:2]]
+        return ("Raspberry Pi" if name == "knowledge" else ""), lines
     return "", []
 
 
@@ -219,6 +229,17 @@ def main(argv=None) -> int:
         turn_error = f"{type(e).__name__}: {e}"
     title, lines = compose_scene(name, room, sink)
     sink.set_scene(title, lines)
+    # Which composition the turn's single wall write carried, and
+    # every scene validation turned away on the way — neither is
+    # left implicit in the wall's after-state.
+    if room.wall_scenes:
+        wall_outcome = "tool_scene"
+    elif room.weather is not None:
+        wall_outcome = "weather"
+    elif lines:
+        wall_outcome = "sentences"
+    else:
+        wall_outcome = "none"
     receipt = sink.receipt
     try:
         receipt = sink.flush()
@@ -280,6 +301,8 @@ def main(argv=None) -> int:
                              if play_dt is not None else None),
         "tool_calls": [tc["name"] for tc in marks["tool_calls"]],
         "sentences": sink.sentences,
+        "wall_outcome": wall_outcome,
+        "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_after": wall,
     }
     if not args.skip_record:
