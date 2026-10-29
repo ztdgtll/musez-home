@@ -1,4 +1,4 @@
-"""Run the three canned turns through the bridge loop, model-free.
+"""Run the four canned turns through the bridge loop, model-free.
 
     python3 -m bridge.mock_demo
 
@@ -17,6 +17,7 @@ TRANSCRIPTS = {
     "knowledge": "¿qué es una Raspberry Pi?",
     "weather": "¿qué clima hace?",
     "wall": "poné el clima en la pared",
+    "plan": "planificá mi sábado",
 }
 
 

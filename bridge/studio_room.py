@@ -12,6 +12,13 @@ Same dispatch contract as `DryRoom` (tools.py), against the live room:
   corrects. An invalid scene comes back as an {"ok": False} result
   naming the limit it broke, and the rejection is kept on the room
   (`wall_rejections`) so the turn record does not lose it.
+- `set_day_plan` validates a structured day-plan payload (bridge/
+  day_plan.py) and records it as the turn's plan candidate, under the
+  same discipline: never a mid-turn write, an invalid plan comes back
+  as an {"ok": False} result naming the limit it broke. At flush time
+  a plan candidate outranks a card candidate — the turn's one wall
+  write carries the infographic, with a card summary of the same
+  plan for the existing card path.
 - `get_weather` reads the same Open-Meteo feed (Tamarac, FL) the
   studio's fast path uses, via fastwx.sh: today plus a 7-day forecast,
   with hourly precipitation probability for one date from the same
@@ -32,6 +39,8 @@ import json
 import os
 import subprocess
 import urllib.request
+
+from .day_plan import plan_problem
 
 SSH_CONFIG = os.path.expanduser("~/workspace/tools/ssh_config_pis")
 SSH_HOST = "pi5"
@@ -239,6 +248,9 @@ class StudioRoom:
         # from the last one) and the scenes validation turned away.
         self.wall_scenes: list[dict] = []
         self.wall_rejections: list[dict] = []
+        # Day-plan candidates recorded by set_day_plan, same
+        # discipline; a plan outranks a card at composition time.
+        self.plan_scenes: list[dict] = []
         self.weather = None
 
     def set_wall_scene(self, title: str, line1: str = "", line2: str = "") -> dict:
@@ -256,6 +268,26 @@ class StudioRoom:
                 {"title": title, "lines": lines, "error": problem})
             return {"ok": False, "error": problem}
         self.wall_scenes.append({"title": title, "lines": lines})
+        return {"ok": True, "queued": title}
+
+    def set_day_plan(self, title: str, blocks: list,
+                     date: str = None) -> dict:
+        """Record the turn's day-plan candidate. Like set_wall_scene,
+        it does NOT write the wall: the validated payload ships with
+        the turn's single flush write, as the dispatch's structured
+        scene. An invalid plan is rejected with the limit it broke
+        and kept in `wall_rejections`, so the turn falls back to a
+        card scene instead of losing its answer."""
+        plan = {"kind": "plan", "title": title, "blocks": blocks}
+        if date is not None:
+            plan["date"] = date
+        problem = plan_problem(plan)
+        if problem is not None:
+            self.wall_rejections.append(
+                {"title": title, "lines": [], "error": problem,
+                 "kind": "plan"})
+            return {"ok": False, "error": problem}
+        self.plan_scenes.append(plan)
         return {"ok": True, "queued": title}
 
     def get_weather(self, date: str = None) -> dict:

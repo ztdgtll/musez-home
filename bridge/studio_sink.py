@@ -65,6 +65,14 @@ class Respond2Transport:
     Content travels as argv, never through a shell; the original turn id
     is threaded through RESPOND_TURN so the answer's wall writes belong
     causally to this turn, exactly like a listener-driven response.
+
+    A structured scene (bridge/day_plan.py) rides the dispatch as the
+    `scene` keyword: respond2's contract is exactly four arguments, so
+    the card summary composed from the same plan (title + lines) is
+    what it carries, and the validated payload is recorded on the
+    receipt. Forwarding the payload itself to the wall page is the
+    pending prototype step — the wall does not render structured
+    scenes yet (see day_plan.py's contract boundary).
     """
 
     def __init__(self, script: str = None, runner=None):
@@ -76,7 +84,8 @@ class Respond2Transport:
             )
         )
 
-    def __call__(self, title: str, lines: list, text: str, turn) -> dict:
+    def __call__(self, title: str, lines: list, text: str, turn,
+                 scene: dict = None) -> dict:
         line1 = lines[0] if len(lines) > 0 else ""
         line2 = lines[1] if len(lines) > 1 else ""
         # The bridge's API key is not the room's business: respond2
@@ -98,7 +107,10 @@ class Respond2Transport:
         if not m:
             raise LaunchUnknownError(
                 f"respond2 did not confirm a launch: {proc.stdout!r}")
-        return {"rid": m.group(1), "turn": m.group(2), "pid": int(m.group(3))}
+        receipt = {"rid": m.group(1), "turn": m.group(2), "pid": int(m.group(3))}
+        if scene is not None:
+            receipt["scene_kind"] = scene.get("kind")
+        return receipt
 
 
 class StudioSink:
@@ -112,6 +124,12 @@ class StudioSink:
     the turn's scene candidate if it recorded one, else from the
     weather result, else from the first spoken sentences themselves —
     the wall's lines read as her voice, never as a mid-turn draft.
+
+    When the turn's final scene is a STRUCTURED payload (a day plan,
+    bridge/day_plan.py), `set_scene` also takes it as `scene`: flush
+    then passes it to the transport as a `scene` keyword on the same
+    single call. Card-only turns call the transport exactly as
+    before — the protocol grows only when a structured scene exists.
     """
 
     def __init__(self, transport, turn=None, title: str = "", lines=()):
@@ -119,11 +137,12 @@ class StudioSink:
         self.turn = turn
         self.title = title
         self.lines = list(lines)
+        self.scene: dict | None = None
         self.sentences: list[str] = []
         self.events: list = []  # (perf_counter, kind) — stage marks
         self.receipt = None
 
-    def set_scene(self, title: str, lines) -> None:
+    def set_scene(self, title: str, lines, scene: dict = None) -> None:
         lines = list(lines)
         if len(lines) > 2:
             # The transport speaks exactly two lines; accepting more
@@ -132,6 +151,7 @@ class StudioSink:
                 f"a wall scene takes at most 2 lines; got {len(lines)}")
         self.title = title
         self.lines = lines
+        self.scene = scene
 
     def say(self, sentence: str) -> None:
         if not self.sentences:
@@ -146,7 +166,13 @@ class StudioSink:
             return self.receipt
         text = " ".join(self.sentences)
         try:
-            self.receipt = self.transport(self.title, self.lines, text, self.turn)
+            if self.scene is None:
+                self.receipt = self.transport(
+                    self.title, self.lines, text, self.turn)
+            else:
+                self.receipt = self.transport(
+                    self.title, self.lines, text, self.turn,
+                    scene=self.scene)
         except LaunchUnknownError:
             # Terminal receipt: the response may be playing, so a
             # later flush() returns this instead of dispatching again.

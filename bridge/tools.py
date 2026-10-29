@@ -28,6 +28,35 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "set_day_plan",
+            "description": "Show a day plan on the room's wall as a timeline infographic: an ordered list of blocks (morning activity, free time, the rain band). Use for planning a day, not for a single fact. The plan is queued and lands on the wall together with your spoken answer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Plan title, in English, at most 24 characters, single line (e.g. 'Saturday plan')."},
+                    "date": {"type": "string", "description": "The planned date, YYYY-MM-DD."},
+                    "blocks": {
+                        "type": "array",
+                        "description": "At most 6 blocks, ordered, non-overlapping, within the day.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start": {"type": "string", "description": "Start time, HH:MM (24h)."},
+                                "end": {"type": "string", "description": "End time, HH:MM (24h), after start."},
+                                "label": {"type": "string", "description": "Block label, in Spanish, at most 48 characters, single line."},
+                                "kind": {"type": "string", "enum": ["activity", "rain", "free", "note"]},
+                            },
+                            "required": ["start", "end", "label", "kind"],
+                        },
+                    },
+                },
+                "required": ["title", "blocks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_weather",
             "description": "Weather for the home location (Tamarac, FL): today plus a 7-day forecast, with hourly precipitation probability for one date.",
             "parameters": {
@@ -66,11 +95,55 @@ class DryRoom:
         self.actions.append({"wall": title, "line1": line1, "line2": line2})
         return {"ok": True, "shown": title}
 
+    def set_day_plan(self, title: str, blocks: list = None,
+                     date: str = None) -> dict:
+        self.actions.append({"plan": title, "blocks": blocks, "date": date})
+        return {"ok": True, "queued": title}
+
     def get_weather(self, date: str = None) -> dict:
         self.actions.append({"weather_lookup": True, "date": date})
-        return {"temp_c": 29, "condition": "soleado",
-                "note": "dry-run sample data",
-                "forecast": [], "hourly_precipitation": None}
+        return _sample_weather(date)
+
+
+def _sample_weather(date: str = None) -> dict:
+    """A deterministic stand-in for the real feed, in the same shape
+    StudioRoom returns: a 7-day forecast starting today and one
+    date's hourly precipitation — dry all morning, rain at or above
+    the 50% band threshold from 13:00 to 17:00, dry again after.
+    Fixed patterns (only the dates move), so the deterministic plan
+    composer produces the same Saturday every run."""
+    from datetime import date as _date, timedelta
+
+    today = _date.today()
+    target = date or today.isoformat()
+    forecast = []
+    for i in range(7):
+        day = today + timedelta(days=i)
+        forecast.append({
+            "date": day.isoformat(),
+            "temp_max_f": 84.0, "temp_min_f": 73.0,
+            "precip_prob_max": 80 if i % 3 == 2 else 10,
+            "weathercode": 61 if i % 3 == 2 else 0,
+            "condition": "lluvia leve" if i % 3 == 2 else "despejado",
+        })
+    hourly = [
+        {"time": f"{h:02d}:00",
+         "precip_probability": 80 if 13 <= h <= 17 else 10}
+        for h in range(24)
+    ]
+    today_entry = forecast[0]
+    return {
+        "temp_c": 29, "condition": "soleado",
+        "note": "dry-run sample data",
+        "temp_max_f": today_entry["temp_max_f"],
+        "temp_min_f": today_entry["temp_min_f"],
+        "precip_prob_max": today_entry["precip_prob_max"],
+        "weathercode": today_entry["weathercode"],
+        "forecast": forecast,
+        "hourly_date": target,
+        "hourly_precipitation": hourly,
+        "source": "dry-run sample data",
+    }
 
     def say(self, text: str) -> dict:
         self.actions.append({"say": text})

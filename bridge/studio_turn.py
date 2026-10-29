@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 # against a Pi-local t_start, never the host's local time.
 PI_TZ = ZoneInfo("America/New_York")
 
+from .day_plan import plan_card
 from .mock_source import TURNS
 from .studio_room import (
     SCENE_LINE_MAX,
@@ -85,6 +86,8 @@ def pick_turn(transcript: str) -> str:
     t = "".join(c for c in t if not unicodedata.combining(c))
     if "pared" in t:
         return "wall"
+    if "sabado" in t or "plan" in t:
+        return "plan"
     if "clima" in t:
         return "weather"
     return "knowledge"
@@ -123,6 +126,23 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
         lines = [_truncate(s, SCENE_LINE_MAX) for s in sink.sentences[:2]]
         return ("Raspberry Pi" if name == "knowledge" else ""), lines
     return "", []
+
+
+def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink):
+    """The turn's final scene as (title, lines, scene): a validated
+    day plan outranks every card composition — the flush then ships
+    the plan payload as the dispatch's structured scene, with a card
+    summary of the SAME plan as its title+lines. Without a plan this
+    is exactly compose_scene and scene is None. A plan the room
+    rejected never got queued, so an invalid plan lands here as its
+    absence — the card fallback below is the fallback, and the turn
+    is never lost over a bad payload."""
+    if room.plan_scenes:
+        plan = room.plan_scenes[-1]
+        title, lines = plan_card(plan)
+        return title, lines, plan
+    title, lines = compose_scene(name, room, sink)
+    return title, lines, None
 
 
 def _ssh_cat(command: str, runner=None) -> str:
@@ -227,12 +247,14 @@ def main(argv=None) -> int:
                      "t_full": TURN_DEADLINE_S * 1000.0}
     except Exception as e:
         turn_error = f"{type(e).__name__}: {e}"
-    title, lines = compose_scene(name, room, sink)
-    sink.set_scene(title, lines)
+    title, lines, scene = compose_final_scene(name, room, sink)
+    sink.set_scene(title, lines, scene=scene)
     # Which composition the turn's single wall write carried, and
     # every scene validation turned away on the way — neither is
     # left implicit in the wall's after-state.
-    if room.wall_scenes:
+    if scene is not None:
+        wall_outcome = "plan"
+    elif room.wall_scenes:
         wall_outcome = "tool_scene"
     elif room.weather is not None:
         wall_outcome = "weather"
@@ -302,6 +324,7 @@ def main(argv=None) -> int:
         "tool_calls": [tc["name"] for tc in marks["tool_calls"]],
         "sentences": sink.sentences,
         "wall_outcome": wall_outcome,
+        "plan": scene,
         "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_after": wall,
     }

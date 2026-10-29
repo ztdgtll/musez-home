@@ -85,7 +85,8 @@ class TextTurnTests(unittest.TestCase):
         self.assertEqual(body["model"], "muse-spark-1.3")
         offered = {t["function"]["name"] for t in body["tools"]}
         self.assertEqual(
-            offered, {"set_wall_scene", "get_weather", "say", "escalate"})
+            offered, {"set_wall_scene", "set_day_plan", "get_weather",
+                      "say", "escalate"})
 
 
 class SystemPromptTests(unittest.TestCase):

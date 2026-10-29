@@ -12,6 +12,15 @@ Input (one JSON object on stdin):
     {"turn": <int>, "phase": <int>, "sticky": <bool, optional>,
      "kv": {"scene": ..., "avatar": ..., "title": ..., "lines": [...]}}
 
+A day-plan scene travels as kv {"scene": "plan", "plan": {...}} — the
+structured payload bridge/day_plan.py validates (title, date and an
+ordered block list). It is validated here too, to the same limits,
+before any argv is built. NOTE: the wall page does not render the
+"plan" kind yet — rendering timelines is a separate prototype /
+approval step. This helper's contract ends at passing a well-formed,
+validated payload through to setstate, byte-identical like any other
+content.
+
 It builds the setstate.py argv as a list and runs it locally — setstate.py
 is the wall's only sanctioned write path, with its turn/phase guard and
 exit codes (0 applied, 4 rejected by the guard, 3 lock timeout, 2 usage).
@@ -30,7 +39,7 @@ import sys
 SETSTATE = os.environ.get("WALL_APPLY_SETSTATE", "/home/ztdgtll/pared/setstate.py")
 
 # The bridge may only touch scene-content keys — never bookkeeping.
-ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave"}
+ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave", "plan"}
 
 # The wall's closed design budget for one scene — the same limits
 # bridge/studio_room.py validates before a scene is ever queued.
@@ -39,6 +48,13 @@ ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wav
 SCENE_TITLE_MAX = 24
 SCENE_LINE_MAX = 48
 SCENE_MAX_LINES = 2
+
+# The day-plan budget — mirrors bridge/day_plan.py (same standalone
+# duplication rule): at most 6 timeline blocks with labels that fit
+# the disc, ordered and non-overlapping within the day.
+PLAN_MAX_BLOCKS = 6
+PLAN_LABEL_MAX = 48
+PLAN_BLOCK_KINDS = ("activity", "rain", "free", "note")
 
 
 def _validate_scene(kv: dict) -> None:
@@ -76,6 +92,90 @@ def _validate_scene(kv: dict) -> None:
                     f"the limit is {SCENE_LINE_MAX}")
 
 
+def _plan_minutes(value):
+    """'HH:MM' -> minutes since midnight, or None (mirrors day_plan)."""
+    if not isinstance(value, str):
+        return None
+    parts = value.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 24 and 0 <= minute < 60):
+        return None
+    if hour == 24 and minute != 0:
+        return None
+    return hour * 60 + minute
+
+
+def _validate_plan(kv: dict) -> None:
+    """Refuse a day plan the design system cannot display.
+
+    Mirrors bridge/day_plan.py's plan_problem for the payload that
+    travels here as kv["plan"] beside kv["scene"] == "plan"; raises
+    ValueError naming the limit broken (apply() reports rc 2)."""
+    plan = kv.get("plan")
+    if plan is None:
+        if kv.get("scene") == "plan":
+            raise ValueError("scene 'plan' requires a plan payload")
+        return
+    if kv.get("scene") != "plan":
+        raise ValueError("a plan payload requires scene 'plan'")
+    if not isinstance(plan, dict):
+        raise ValueError("plan must be an object")
+    if plan.get("kind") != "plan":
+        raise ValueError("plan kind must be 'plan'")
+    title = plan.get("title")
+    if not isinstance(title, str):
+        raise ValueError("plan title must be text")
+    if "\n" in title or "\r" in title:
+        raise ValueError("plan title must be a single line (no newlines)")
+    if len(title) > SCENE_TITLE_MAX:
+        raise ValueError(
+            f"plan title is {len(title)} characters; "
+            f"the limit is {SCENE_TITLE_MAX}")
+    blocks = plan.get("blocks")
+    if not isinstance(blocks, list):
+        raise ValueError("plan blocks must be a list")
+    if not blocks:
+        raise ValueError("a plan needs at least one block")
+    if len(blocks) > PLAN_MAX_BLOCKS:
+        raise ValueError(
+            f"a plan takes at most {PLAN_MAX_BLOCKS} blocks; "
+            f"got {len(blocks)}")
+    prev_end = None
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            raise ValueError(f"block {i} must be an object")
+        if block.get("kind") not in PLAN_BLOCK_KINDS:
+            raise ValueError(
+                f"block {i} kind must be one of "
+                f"{', '.join(PLAN_BLOCK_KINDS)}")
+        label = block.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"block {i} label must be text")
+        if "\n" in label or "\r" in label:
+            raise ValueError(
+                f"block {i} label must be a single line (no newlines)")
+        if len(label) > PLAN_LABEL_MAX:
+            raise ValueError(
+                f"block {i} label is {len(label)} characters; "
+                f"the limit is {PLAN_LABEL_MAX}")
+        start = _plan_minutes(block.get("start"))
+        end = _plan_minutes(block.get("end"))
+        if start is None or end is None:
+            raise ValueError(f"block {i} times must be HH:MM")
+        if start >= end:
+            raise ValueError(f"block {i} must start before it ends")
+        if prev_end is not None and start < prev_end:
+            raise ValueError(
+                f"block {i} starts before block {i - 1} ends: "
+                f"blocks must be ordered and non-overlapping")
+        prev_end = end
+
+
 def build_argv(payload: dict) -> list:
     if not isinstance(payload, dict):
         raise ValueError("payload must be a JSON object")
@@ -92,6 +192,7 @@ def build_argv(payload: dict) -> list:
     if bad:
         raise ValueError(f"keys not allowed: {sorted(bad)}")
     _validate_scene(kv)
+    _validate_plan(kv)
     argv = ["python3", SETSTATE, f"--turn={turn}", f"--phase={phase}"]
     if payload.get("sticky"):
         argv.append("--sticky")

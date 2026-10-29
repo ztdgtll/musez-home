@@ -36,6 +36,23 @@ voice → wake word → local STT → transcript
       → per-stage timing log (every turn)
 ```
 
+### Day-plan scenes
+
+Planning turns ship a structured scene, not just a card: a day plan
+(`bridge/day_plan.py`) is a validated timeline payload — an ordered
+list of blocks (activity / rain / free / note) with the rain band
+derived from the real hourly forecast — so a planned Saturday reads
+as an infographic: the morning activity placed in the dry hours, the
+rain drawn as a band. The model can submit one (`set_day_plan`), and
+a deterministic composer builds the same payload from the forecast
+with no model involved, so the demo's plan never depends on
+free-form generation. A plan rides the turn's single wall write at
+flush time, alongside a card summary composed from the same payload.
+**Status:** the bridge validates and ships the payload today; the
+wall page does not render the `plan` kind yet — rendering is a
+separate prototype step, and until it lands the card summary is what
+the wall shows.
+
 ## Latency budget (targets, validated by measurement during the event)
 
 | Stage | Budget |
