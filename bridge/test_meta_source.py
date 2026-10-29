@@ -14,7 +14,9 @@ import copy
 import json
 import unittest
 
-from .meta_source import MAX_ROUNDS, SHORT_OPENER_GUIDANCE, MetaAPIError, MetaSource
+from .meta_source import (MAX_ROUNDS, SHORT_OPENER_GUIDANCE,
+                          SPARK_MAX_TOKENS, SPARK_REASONING_EFFORT,
+                          WONDER_MAX_TOKENS, MetaAPIError, MetaSource)
 from .tools import TOOL_SCHEMAS, DryRoom
 from .turn import PrintSink, run_turn
 
@@ -270,6 +272,103 @@ class RoundBudgetTests(unittest.TestCase):
         self.assertEqual(source.last_turn["rounds"], MAX_ROUNDS)
         self.assertEqual(sink.sentences,
                          ["Respuesta final con lo que hay."])
+
+
+def usage_line(prompt_tokens: int, completion_tokens: int,
+               with_choices: bool = True) -> str:
+    """A usage-only SSE chunk, as the API sends at the end of a
+    stream: choices empty — or absent altogether."""
+    obj: dict = {"usage": {"prompt_tokens": prompt_tokens,
+                           "completion_tokens": completion_tokens,
+                           "total_tokens": prompt_tokens + completion_tokens}}
+    if with_choices:
+        obj["choices"] = []
+    return "data: " + json.dumps(obj)
+
+
+class UsageAndParamsTests(unittest.TestCase):
+    def test_spark_params_and_per_round_marks(self):
+        transport = FakeTransport([
+            [
+                tool_delta(0, call_id="w1", name="get_weather",
+                           arguments="{}"),
+                sse({}, finish="tool_calls"),
+                usage_line(800, 12),
+                DONE,
+            ],
+            [
+                content("Hoy hace sol en Tamarac."),
+                usage_line(850, 30),
+                DONE,
+            ],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "¿qué clima hace?")
+        self.assertEqual(sink.sentences, ["Hoy hace sol en Tamarac."])
+        # Every streaming request asks for usage and carries the
+        # fast model's explicit shaping: minimal reasoning + cap.
+        for body in transport.requests:
+            self.assertEqual(body["stream_options"],
+                             {"include_usage": True})
+            self.assertEqual(body["reasoning_effort"],
+                             SPARK_REASONING_EFFORT)
+            self.assertEqual(body["max_tokens"], SPARK_MAX_TOKENS)
+        # One mark per round, with the round's own model, tools and
+        # the API's usage — not just turn-level totals.
+        round_marks = source.last_turn["round_marks"]
+        self.assertEqual(len(round_marks), 2)
+        self.assertEqual(round_marks[0]["model"], "muse-spark-1.3")
+        self.assertEqual(round_marks[0]["tool_names"], ["get_weather"])
+        self.assertEqual(round_marks[0]["prompt_tokens"], 800)
+        self.assertEqual(round_marks[0]["completion_tokens"], 12)
+        self.assertEqual(round_marks[1]["tool_names"], [])
+        self.assertEqual(round_marks[1]["completion_tokens"], 30)
+        self.assertIsNotNone(round_marks[1]["ttft_ms"])
+        self.assertGreaterEqual(round_marks[1]["duration_ms"],
+                                round_marks[1]["ttft_ms"])
+        self.assertEqual(source.last_turn["prompt_tokens"], 1650)
+        self.assertEqual(source.last_turn["completion_tokens"], 42)
+
+    def test_usage_chunk_without_choices_is_tolerated(self):
+        transport = FakeTransport([[
+            content("Una Raspberry Pi es una computadora completa."),
+            usage_line(640, 25, with_choices=False),
+            DONE,
+        ]])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "¿qué es una Raspberry Pi?")
+        self.assertEqual(
+            sink.sentences,
+            ["Una Raspberry Pi es una computadora completa."])
+        self.assertEqual(source.last_turn["prompt_tokens"], 640)
+        self.assertEqual(source.last_turn["completion_tokens"], 25)
+
+    def test_wonder_round_gets_wonder_params(self):
+        transport = FakeTransport([
+            [
+                tool_delta(0, call_id="e1", name="escalate",
+                           arguments='{"reason": "planning"}'),
+                sse({}, finish="tool_calls"),
+                usage_line(810, 9),
+                DONE,
+            ],
+            [
+                content("Armé tu sábado completo."),
+                usage_line(900, 210),
+                DONE,
+            ],
+        ])
+        source = MetaSource(transport=transport)
+        run(source, "planificá mi sábado")
+        wonder_body = transport.requests[1]
+        self.assertEqual(wonder_body["model"], "muse-wonder-1.0")
+        # The deep model is shaped by its own generous cap only —
+        # no minimal-reasoning squeeze on the model bought for depth.
+        self.assertEqual(wonder_body["max_tokens"], WONDER_MAX_TOKENS)
+        self.assertNotIn("reasoning_effort", wonder_body)
+        models = [m["model"] for m in source.last_turn["round_marks"]]
+        self.assertEqual(models, ["muse-spark-1.3", "muse-wonder-1.0"])
+        self.assertEqual(source.last_turn["completion_tokens"], 219)
 
 
 class ErrorTests(unittest.TestCase):

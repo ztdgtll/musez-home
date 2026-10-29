@@ -4,6 +4,18 @@ First live-model numbers for the bridge, measured against the Meta Model API
 now that the hackathon's US$150 free credits are applied in Billing. Raw
 records: `probe-live-2026-10-29.jsonl` (20 calls, 0 errors, all HTTP 200).
 
+> **Follow-up (same day):** this run measured bare prompts on purpose —
+> and a later Wonder review (finding B-8) pointed out that it therefore
+> measured a different system than the bridge. The production-path
+> re-measurement (same canonical prompts through `MetaSource.stream_turn`,
+> production system prompt, tool schemas, per-model request shaping)
+> lives in `latency-live-prod-2026-10-29.md`, raw records in
+> `probe-live-prod-2026-10-29.jsonl`. This file's data stands as the
+> bare-probe run it always claimed to be — with one correction of
+> method: the p95 figures below are interpolations over n=5 per class,
+> not observed calls (finding B-2), and should not be quoted; the
+> follow-up reports every point with median / min–max instead.
+
 ## Method
 
 - Streaming `POST https://api.meta.ai/v1/chat/completions`, bare user
