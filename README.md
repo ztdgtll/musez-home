@@ -4,13 +4,13 @@ A low-latency voice bridge for a real room: the **Meta Model API** (Muse Spark, 
 
 Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) — Indie Developer track, **Build for Your World** theme.
 
-> **Status — Oct 29, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probe run 2026-10-29 — results in `experiments/results/latency-live-2026-10-29.md`. Room integration (listener → bridge) lands Oct 31 – Nov 1.
+> **Status — Oct 29, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probes run 2026-10-29 (bare API stage, then through the production path) — results in `experiments/results/`. Room integration (listener → bridge) lands Oct 31 – Nov 1.
 
 ## The proof, up front
 
 - **Models** — `muse-spark-1.3` answers first: streaming, with the room's tools offered as function calls. When a turn needs deeper reasoning, Spark hands it to `muse-wonder-1.0` through an internal `escalate` call, before answering — Wonder is the escalation target, never the first responder.
 - **Room tools the models can call** — `get_weather` (Tamarac, FL: today, a 7-day forecast, hourly precipitation), `set_wall_scene` (a title and up to two lines, validated against the wall's design budget before they can land), `set_day_plan` (a structured day-plan timeline), `clean_studio` (starts the robot vacuum cleaning the studio), and `say` (a spoken acknowledgement inside the turn).
-- **Measured — the model stage, live** (Meta Model API probe, Oct 29, 2026; bare prompts, streaming, n = 10 per model, 0 errors — this is the API stage, **not** a room turn): Spark first token p50 **3.6 s**, first complete sentence p50 **3.7 s**, full response p50 **4.0 s**; Wonder first complete sentence p50 **8.9 s** — the measured reason Wonder only receives escalations. Full results: [`experiments/results/latency-live-2026-10-29.md`](experiments/results/latency-live-2026-10-29.md).
+- **Measured — through the bridge's own production path** (Oct 29, 2026; the bridge's real client, system prompt and tool schemas, tools dispatched at their measured latencies, n = 5 per arm, 0 errors — the model stage of real bridge turns, **not** end-to-end room turns: STT, TTS and transport land with the room integration): Spark's first token *is* its first complete sentence at median **1.8 s** on both weather and knowledge turns; full Spark turns run **2.7–5.8 s**. An escalated planning turn hears Wonder's first sentence at **8.4 s** (median) and delivers the full plan in **29.1 s** — the measured reason Wonder only receives escalations. An earlier bare-prompt probe the same day (n = 10, no production request shaping) measured Spark's first token at 3.6 s: the gap is the production configuration, and the bare numbers survive only as that comparison. Full results: [`experiments/results/latency-live-prod-2026-10-29.md`](experiments/results/latency-live-prod-2026-10-29.md) (bare probe: [`latency-live-2026-10-29.md`](experiments/results/latency-live-2026-10-29.md)).
 - **The baseline it replaces** — the room's pre-event chat path: median transcript → first audio **50.9 s** (n = 7, measured 2026-10-23). Bridge room turns will be published on the same definition once the Oct 31 – Nov 1 integration lands.
 - **Demo video** — lands Nov 4.
 
@@ -25,7 +25,7 @@ You say "Hey Muse" in the studio. The room listens, transcribes locally, and sen
 ## What was built during the hackathon (Oct 26 – Nov 4, 2026)
 
 - The **bridge**: transcript → Meta Model API (Muse Spark streaming + function calling) → sentence-chunked speech and wall scenes, with escalation to **Muse Wonder** for turns that need deeper reasoning.
-- The **latency probe and budget**: per-stage timing (first token, first complete sentence, TTS render, playback dispatch) with p50/p95 reporting over real turns.
+- The **latency probe and budget**: per-stage timing (first token, first complete sentence, TTS render, playback dispatch), published as all points + median + range — a p95 is only claimed on ≥ 30 warm calls per arm.
 - The tool layer that lets the models act on the room: wall scene control, voice reply dispatch, and live-data tools.
 - The **studio integration**: the bridge loop driving the room's real surfaces — tool calls that act on the wall through the Pi's guarded state writer, and speech delivered through the studio's existing response transport (same voice, same player) — verified end to end in the room with the mock source; the live-source wiring is the Oct 31 – Nov 1 step (see Status above).
 - This documentation, the measured results, and the demo.
@@ -141,10 +141,10 @@ the wall shows.
 
 | Stage | Target | Measured |
 |---|---|---|
-| Spark: first token | ≤ 2 s | p50 3.6 s (live probe, Oct 29) — target not yet met |
-| Spark: first complete sentence (streaming) | ≤ 4 s | p50 3.7 s (live probe, Oct 29) |
+| Spark: first token | ≤ 2 s | median 1.76–1.81 s through the production path (n = 5 per arm, Oct 29) — met at median; worst point 2.16 s |
+| Spark: first complete sentence (streaming) | ≤ 4 s | median 1.8 s, both classes (production path, Oct 29) — met |
 | TTS render, first sentence (room transport) | ≤ 3 s | baseline ~1.97 s (7-word sentence) |
-| **Perceived total to first voice** | **≤ ~12 s** | Room validation lands Oct 31 – Nov 1; the measured model+TTS floor is ≈ 5.9 s on the whole-turn basis — full budget in `docs/latency-budget.md` |
+| **Perceived total to first voice** | **≤ ~12 s** | Room validation lands Oct 31 – Nov 1; the measured model+TTS floor is ≈ 4.6 s (simple turns) to ≈ 7.7 s (weather turns) on the whole-turn basis — full budget in `docs/latency-budget.md` |
 
 The baseline this replaces — the pre-event chat path — measured a median transcript → first audio of 50.9 s (n = 7, 2026-10-23). Measured results live in `experiments/results/`. If a stage misses its target, the writeup says so and shows the number.
 

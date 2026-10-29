@@ -39,12 +39,12 @@ repository, *Meta API* = the provider.
 | Wake → end of capture (endpointing) | Pi | Sequential — Total A only | Not re-measured in this window | ≤ 2 s after last word — carried from the pre-existing design |
 | Local STT | Pi | Sequential — Total A only | Not re-measured in this window | ≤ 3 s, typical clips — carried from the pre-existing design |
 | Turn mint (SSH round trip; `setstate.py --mint-turn`) | Bridge ↔ Pi | Sequential — both totals | Inside the Oct 27 mock room record (mint → first audio 15.04 s for the whole pipeline, fake model); not split out on its own yet | No target was set — it is in the table now because it is in the total |
-| Spark round 1: first token | Meta API | Nested in first sentence | p50 3.6 s, best observed 2.92 s (live probe, Oct 29) | **≤ 2 s — not yet met** |
-| Spark round 1: first complete sentence | Meta API | Nested in full response | p50 3.7 s (simple turns 3.5 s; weather 5.2 s) — live probe, Oct 29 | **≤ 4 s — met at p50 overall and for simple turns; missed for weather** |
-| Spark round 1: full response | Meta API | Sequential — the voice-start basis while dispatch is whole-turn | p50 4.0 s (live probe, Oct 29) | — |
-| Tool execution (`get_weather`, wall candidates) | Bridge → room feeds | Sequential — tool turns only | Not split out yet; bounded by the 20 s turn deadline | — |
-| Model round 2 (continuation after tool results) | Meta API | Sequential — tool turns only | Not split out yet | — |
-| Escalation: Wonder round (replaces the rest of round 1) | Meta API | Sequential — escalated turns only | Wonder first complete sentence p50 8.9 s (weather 13.0 s) — live probe, Oct 29 | Escalated turns carry their own, larger expectation; a spoken acknowledgement covers the wait |
+| Spark round 1: first token | Meta API | Nested in first sentence | Median 1,761–1,806 ms across both classes, worst point 2,159 ms (production path, n = 5 per arm, Oct 29). The same day's bare-prompt probe — no production request shaping — measured p50 3.6 s | **≤ 2 s — met at median through the production path**; the bare probe's miss was a property of that configuration, not of the bridge |
+| Spark round 1: first complete sentence | Meta API | Nested in full response | Median 1.8 s for both classes, worst point 2.2 s (production path, Oct 29) | **≤ 4 s — met at median for both classes** |
+| Spark round 1: full response | Meta API | Sequential — the voice-start basis while dispatch is whole-turn | Median 2.68 s (knowledge) / 5.77 s (weather, tools at measured latency) — production path, Oct 29 | — |
+| Tool execution (`get_weather`, wall candidates) | Bridge → room feeds | Sequential — tool turns only | `get_weather` round trip measured on its own: median 870 ms (10 timed fetches, Oct 29); the production-path probe dispatches tools to a stub at that latency | — |
+| Model round 2 (continuation after tool results) | Meta API | Sequential — tool turns only | Visible in the production probe's per-round marks: a production turn is 2–5 rounds, re-sending a ~1.4K-token context each round | — |
+| Escalation: Wonder round (replaces the rest of round 1) | Meta API | Sequential — escalated turns only | Escalated planning turns (n = 5, escalated 5/5): Wonder's first sentence median 8.37 s, full plan median 29.1 s (21.6–43.5) — production path, Oct 29. (Bare probe: Wonder first sentence p50 8.9 s.) | Escalated turns carry their own, larger expectation; a spoken acknowledgement covers the wait |
 | Final flush: the turn's single dispatch | Bridge | Sequential | One respond2 invocation per turn, by construction | — |
 | TTS render (sentences in parallel; sentence 0 gates playback) | Pi transport | Sequential | First sentence ~1.97 s (7-word baseline) | ≤ 3 s — met on the baseline sentence |
 | Transport + playback start | Pi | Sequential | Local playback start added ~0.2 s in the baseline's healthy path; tunnel health is reported per turn | ≤ 4 s healthy — carried target |
@@ -63,12 +63,13 @@ above, every second is counted exactly once.
 
 ### The measured floor today
 
-Total B's core for a simple, no-tool turn, from the Oct 29 live probe plus
-the TTS baseline:
+Total B's core for a simple, no-tool turn, from the Oct 29 production-path
+probe plus the TTS baseline:
 
-- First-sentence basis: 3.47 s (Spark, simple turns) + 1.97 s ≈ **5.44 s**.
+- First-sentence basis: 1.76 s (Spark, knowledge turns) + 1.97 s ≈ **3.7 s**.
 - Whole-turn basis — the operative one while the turn dispatches whole:
-  3.96 s (Spark full response p50) + 1.97 s ≈ **5.9 s**.
+  2.68 s (Spark full turn, knowledge median) + 1.97 s ≈ **4.6 s**;
+  weather turns run 5.77 s + 1.97 s ≈ **7.7 s** on the same basis.
 
 Both are floors *before* mint, transport and playback start — and neither
 is a room total. Room totals on the Total B definition get published when
@@ -83,8 +84,10 @@ number in this repo claims one.
   (e.g. transport over a degraded tunnel, measured separately).
 - Small samples are published as all points + median + range. A p95 is
   only claimed on ≥ 30 warm calls per arm, with the method stated — the
-  Oct 29 probe (n = 10 per arm) publishes its p95s alongside min, max
-  and the cold-start anomaly that drives them, and they should be read
-  with that sample size in mind.
+  Oct 29 bare probe (n = 10 per arm) publishes its interpolated p95s
+  alongside min, max and the cold-start anomaly that drives them, and
+  they should be read with that sample size in mind. The production-path
+  run the same day (n = 5 per arm) publishes points + median + range
+  only, and supersedes the bare run for any claim about bridge turns.
 - A cold first call is reported cold (the Oct 29 probe's 31.7 s first
   call is in the data), never silently dropped or averaged away.
