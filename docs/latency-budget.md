@@ -17,20 +17,63 @@ sentence in ~2 s, while turn processing before dispatch dominated.
 
 The bridge attacks those two stages: a direct streaming call to Muse Spark
 with a short fixed prompt and minimal reasoning effort for simple requests,
-sentence-level streaming so speech starts at the first complete sentence, and
-per-stage timing on every turn so regressions are visible.
+sentence-level composition — the reply is cut into sentences as the stream
+arrives — and per-stage timing on every turn so regressions are visible.
+One shape matters for every number below: the sink dispatches the
+**finished turn in a single pass** through the room's existing response
+path (respond2 renders the sentences in parallel, ships sentence 0,
+launches playback, and keeps shipping the rest behind it). Until a
+speculative renderer exists, voice start is therefore computed from the
+full turn (`t_full`), never from the first sentence — the first-sentence
+marks describe the model's streaming, not the room's voice start.
 
-## Budget (targets to validate with the probe)
+## The budget, closed
 
-| Stage | Budget | Notes |
-|---|---|---|
-| Wake → end of capture | ≤ 2 s after last word | local VAD endpointing (pre-existing) |
-| Local STT | ≤ 3 s typical clips | local/hybrid (pre-existing) |
-| Spark first token | ≤ 2 s | minimal reasoning effort, short prompt |
-| Spark first complete sentence | ≤ 4 s | streaming; never wait for the full reply |
-| TTS first sentence | ≤ 3 s | measured baseline ~1.97 s for a 7-word sentence |
-| Transport + playback start | ≤ 4 s healthy | measured and reported when degraded |
-| **Perceived total to first speech** | **≤ ~12 s** | realistic floor for knowledge-only turns ≈ 3.7 s of model+TTS alone |
+Stages are **sequential** (they add) or **nested** (contained in the stage
+below them — they never add). Conditional stages fire only on the turns
+that need them. Owners: *Pi* = the pre-existing room, *Bridge* = this
+repository, *Meta API* = the provider.
+
+| Stage | Owner | Counts | Measured so far | Original target — status |
+|---|---|---|---|---|
+| Wake → end of capture (endpointing) | Pi | Sequential — Total A only | Not re-measured in this window | ≤ 2 s after last word — carried from the pre-existing design |
+| Local STT | Pi | Sequential — Total A only | Not re-measured in this window | ≤ 3 s, typical clips — carried from the pre-existing design |
+| Turn mint (SSH round trip; `setstate.py --mint-turn`) | Bridge ↔ Pi | Sequential — both totals | Inside the Oct 27 mock room record (mint → first audio 15.04 s for the whole pipeline, fake model); not split out on its own yet | No target was set — it is in the table now because it is in the total |
+| Spark round 1: first token | Meta API | Nested in first sentence | p50 3.6 s, best observed 2.92 s (live probe, Oct 29) | **≤ 2 s — not yet met** |
+| Spark round 1: first complete sentence | Meta API | Nested in full response | p50 3.7 s (simple turns 3.5 s; weather 5.2 s) — live probe, Oct 29 | **≤ 4 s — met at p50 overall and for simple turns; missed for weather** |
+| Spark round 1: full response | Meta API | Sequential — the voice-start basis while dispatch is whole-turn | p50 4.0 s (live probe, Oct 29) | — |
+| Tool execution (`get_weather`, wall candidates) | Bridge → room feeds | Sequential — tool turns only | Not split out yet; bounded by the 20 s turn deadline | — |
+| Model round 2 (continuation after tool results) | Meta API | Sequential — tool turns only | Not split out yet | — |
+| Escalation: Wonder round (replaces the rest of round 1) | Meta API | Sequential — escalated turns only | Wonder first complete sentence p50 8.9 s (weather 13.0 s) — live probe, Oct 29 | Escalated turns carry their own, larger expectation; a spoken acknowledgement covers the wait |
+| Final flush: the turn's single dispatch | Bridge | Sequential | One respond2 invocation per turn, by construction | — |
+| TTS render (sentences in parallel; sentence 0 gates playback) | Pi transport | Sequential | First sentence ~1.97 s (7-word baseline) | ≤ 3 s — met on the baseline sentence |
+| Transport + playback start | Pi | Sequential | Local playback start added ~0.2 s in the baseline's healthy path; tunnel health is reported per turn | ≤ 4 s healthy — carried target |
+
+### The two totals
+
+- **Total A — last word → first voice** (what the person in the room feels):
+  endpointing + STT + mint + model round 1 (full) [+ tool execution + round 2 on tool turns] [+ the Wonder round on escalated turns] + flush/transport + TTS to sentence 0.
+- **Total B — transcript → first voice** (the baseline's definition; the comparable number):
+  Total A − endpointing − STT.
+
+The old version of this table summed to ~16 s against a declared ~12 s
+total, because nested stages were added as if sequential and mint, tools,
+round 2, escalation and flush were missing entirely. With the formulas
+above, every second is counted exactly once.
+
+### The measured floor today
+
+Total B's core for a simple, no-tool turn, from the Oct 29 live probe plus
+the TTS baseline:
+
+- First-sentence basis: 3.47 s (Spark, simple turns) + 1.97 s ≈ **5.44 s**.
+- Whole-turn basis — the operative one while the turn dispatches whole:
+  3.96 s (Spark full response p50) + 1.97 s ≈ **5.9 s**.
+
+Both are floors *before* mint, transport and playback start — and neither
+is a room total. Room totals on the Total B definition get published when
+the listener → bridge integration lands (Oct 31 – Nov 1); until then, no
+number in this repo claims one.
 
 ## Rules of honesty for the demo
 
@@ -38,3 +81,10 @@ per-stage timing on every turn so regressions are visible.
   promised average.
 - Any stage that misses its budget is reported with its number and a reason
   (e.g. transport over a degraded tunnel, measured separately).
+- Small samples are published as all points + median + range. A p95 is
+  only claimed on ≥ 30 warm calls per arm, with the method stated — the
+  Oct 29 probe (n = 10 per arm) publishes its p95s alongside min, max
+  and the cold-start anomaly that drives them, and they should be read
+  with that sample size in mind.
+- A cold first call is reported cold (the Oct 29 probe's 31.7 s first
+  call is in the data), never silently dropped or averaged away.
