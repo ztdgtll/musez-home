@@ -26,6 +26,12 @@ Same dispatch contract as `DryRoom` (tools.py), against the live room:
   a weather lookup never raises into the turn.
 - `say` routes into the turn's speech sink, so an acknowledgement is
   spoken in order, inside the same turn, not as a rival response.
+- `clean_studio` asks the injected Roborock client (bridge/
+  roborock_client.py) to start a cleanup of the studio's map
+  segment — the segment id comes from the MUSEZ_STUDIO_SEGMENT
+  config variable, never from the model and never hard-coded.
+  Every failure (no segment configured, client unavailable, vacuum
+  error) comes back as an {"ok": False} tool result.
 
 Phase discipline mirrors the listener's ladder (1 listening, 2
 processing, 3 thinking, 4 answer, 5 home): nothing the bridge does
@@ -41,12 +47,18 @@ import subprocess
 import urllib.request
 
 from .day_plan import plan_problem
+from .roborock_client import RoborockClientUnavailable, default_client
 
 SSH_CONFIG = os.path.expanduser("~/workspace/tools/ssh_config_pis")
 SSH_HOST = "pi5"
 WALL_APPLY_CMD = "python3 /home/ztdgtll/bridge/wall_apply.py"
 MINT_TURN_CMD = "python3 /home/ztdgtll/pared/setstate.py --mint-turn"
 DEFAULT_FASTWX = os.path.expanduser("~/workspace/studio/fastwx.sh")
+
+# The studio's segment id in the vacuum's saved map. Segment ids
+# change when the home is remapped, so the id is configuration —
+# read at call time, never hard-coded in code.
+STUDIO_SEGMENT_ENV = "MUSEZ_STUDIO_SEGMENT"
 
 # The wall's closed design budget for one scene: an English title
 # that never wraps, at most two lines that stay inside the disc.
@@ -238,11 +250,12 @@ class StudioRoom:
     """The bridge's Room against the real studio. One instance per turn."""
 
     def __init__(self, turn: int, weather_runner=None,
-                 speak=None, hourly_runner=None):
+                 speak=None, hourly_runner=None, roborock_client=None):
         self.turn = turn
         self._weather = weather_runner or FastWxRunner()
         self._hourly = hourly_runner  # None = no hourly detail available
         self._speak = speak
+        self._roborock = roborock_client or default_client()
         # Scene candidates recorded by set_wall_scene (validated, in
         # call order; the runner composes the turn's ONE final scene
         # from the last one) and the scenes validation turned away.
@@ -340,3 +353,32 @@ class StudioRoom:
             return {"ok": False, "error": "no speech sink wired to this room"}
         self._speak(text)
         return {"ok": True}
+
+    def clean_studio(self) -> dict:
+        """Start the robot vacuum on the studio's map segment.
+
+        The segment id is configuration (MUSEZ_STUDIO_SEGMENT, read
+        now — a remap changes ids), never a model argument. Any
+        problem — segment not configured, client unavailable, the
+        vacuum itself failing — returns {"ok": False, "error": ...}
+        instead of raising into the turn."""
+        segment = os.environ.get(STUDIO_SEGMENT_ENV, "").strip()
+        if not segment:
+            return {"ok": False,
+                    "error": "studio segment not configured: set "
+                             f"{STUDIO_SEGMENT_ENV} to the studio's "
+                             "segment id in the vacuum's map"}
+        room_id = int(segment) if segment.lstrip("-").isdigit() else segment
+        try:
+            status = self._roborock.start_room_clean(room_id)
+        except RoborockClientUnavailable as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False,
+                    "error": f"roborock clean failed: "
+                             f"{type(e).__name__}: {e}"}
+        if isinstance(status, dict):
+            if "ok" in status:
+                return status
+            return {"ok": True, **status}
+        return {"ok": True, "status": str(status)}

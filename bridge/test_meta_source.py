@@ -86,7 +86,7 @@ class TextTurnTests(unittest.TestCase):
         offered = {t["function"]["name"] for t in body["tools"]}
         self.assertEqual(
             offered, {"set_wall_scene", "set_day_plan", "get_weather",
-                      "say", "escalate"})
+                      "clean_studio", "say", "escalate"})
 
 
 class SystemPromptTests(unittest.TestCase):

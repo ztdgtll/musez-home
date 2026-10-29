@@ -17,6 +17,12 @@ authorization — the bridge observes and records that like any other
 outcome. Stage timings are appended to
 experiments/results/bridge-studio-mock.jsonl, labeled mode=mock:
 these are pipeline timings with a fake model, never live-model numbers.
+
+The API switch (bridge/brain_switch.py) gates this runner too: with
+the switch off, main() records the refusal, prints the switch-off
+line and exits 3 — a clean, expected state, distinct from a turn
+error (1) — before minting a turn or touching the network at all.
+Exit codes: 0 ok · 1 turn error · 2 empty transcript · 3 switch off.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from zoneinfo import ZoneInfo
 # against a Pi-local t_start, never the host's local time.
 PI_TZ = ZoneInfo("America/New_York")
 
+from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
 from .day_plan import plan_card
 from .mock_source import TURNS
 from .studio_room import (
@@ -219,6 +226,37 @@ def main(argv=None) -> int:
         print("studio_turn: empty transcript", file=sys.stderr)
         return 2
     name = pick_turn(transcript)
+
+    # The API switch, checked before ANY network-shaped work (even
+    # minting a turn is an SSH call): with the switch off, the bridge
+    # does not run in this room at all — the classic path owns it.
+    # The refusal is recorded like every other outcome.
+    mode = brain_mode()
+    if mode != "bridge":
+        record = {
+            "mode": "switch_off",
+            "source": "brain_switch",
+            "brain_mode": mode,
+            "ts": time.time(),
+            "transcript": transcript,
+            "turn_name": name,
+            "turn_id": None,
+            "rid": None,
+            "playback": "skipped",
+            "turn_error": None,
+            "tool_calls": [],
+            "sentences": [],
+            "wall_after": {},
+        }
+        if not args.skip_record:
+            path = Path(args.results)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"turn[{name}] transcript: {transcript!r}")
+        print(f"  {SWITCH_OFF_MESSAGE} (brain mode: {mode}) — "
+              f"no turn minted, no API call made")
+        return SWITCH_OFF_EXIT_CODE
 
     turn_id = mint_turn()
     if read_wall_state().get("avatar") == "off":

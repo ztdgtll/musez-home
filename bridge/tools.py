@@ -73,6 +73,14 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "clean_studio",
+            "description": "Start the robot vacuum cleaning the studio. Takes no arguments: which part of the home is the studio is configuration, not a choice for the model.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "say",
             "description": "Speak a short text aloud in the room. Used for acknowledgements while work runs.",
             "parameters": {
@@ -103,6 +111,10 @@ class DryRoom:
     def get_weather(self, date: str = None) -> dict:
         self.actions.append({"weather_lookup": True, "date": date})
         return _sample_weather(date)
+
+    def clean_studio(self) -> dict:
+        self.actions.append({"clean_studio": True})
+        return {"ok": True, "status": "cleaning"}
 
 
 def _sample_weather(date: str = None) -> dict:
