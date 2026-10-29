@@ -245,6 +245,7 @@ def main(argv=None) -> int:
             "playback": "skipped",
             "turn_error": None,
             "tool_calls": [],
+            "ack": None,
             "sentences": [],
             "wall_after": {},
         }
@@ -360,6 +361,7 @@ def main(argv=None) -> int:
         "play_time_of_day": (play_dt.strftime("%H:%M:%S.%f")[:-3]
                              if play_dt is not None else None),
         "tool_calls": [tc["name"] for tc in marks["tool_calls"]],
+        "ack": marks.get("ack"),
         "sentences": sink.sentences,
         "wall_outcome": wall_outcome,
         "plan": scene,
@@ -374,6 +376,9 @@ def main(argv=None) -> int:
 
     print(f"turn[{name}] transcript: {transcript!r} (wall turn {turn_id})")
     print(f"  tools: {', '.join(record['tool_calls']) or 'none'}")
+    if record["ack"]:
+        print(f"  ACK: {record['ack'].get('text')!r} "
+              f"(dispatched: {record['ack'].get('dispatched')})")
     for s in sink.sentences:
         print(f"  SPEAK: {s}")
     audio_txt = (f"{t_first_audio_ms:.0f} ms (sayseq log)"

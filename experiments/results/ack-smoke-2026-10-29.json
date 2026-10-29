@@ -1,0 +1,88 @@
+{
+ "prompt": "Planificá mi sábado: una actividad al aire libre a la mañana y estar en casa antes de que empiece la lluvia.",
+ "escalated": true,
+ "ack": {
+  "text": "Dame un momento, armo tu sábado.",
+  "dispatched": true,
+  "ok": true,
+  "rid": "smoke-1"
+ },
+ "t_ack_ms": 1966.840799000238,
+ "t_first_sentence_ms": 7697.397767000439,
+ "t_full_ms": 33393.26357200025,
+ "sentences": [
+  "Perfecto.",
+  "Consulto el pronóstico del sábado para armar el plan.",
+  "Sábado es el 31, así reviso la lluvia hora por hora.",
+  "Listo el pronóstico.",
+  "Ahora lo pongo en la pared.",
+  "Listo tu sábado.",
+  "Actividad al aire libre a la mañana y regreso antes de la una, cuando empieza la lluvia."
+ ],
+ "dispatches": [
+  {
+   "at_ms": 1966.8655559999024,
+   "title": "",
+   "lines": [],
+   "text": "Dame un momento, armo tu sábado."
+  },
+  {
+   "at_ms": 33393.29038200049,
+   "title": "",
+   "lines": [],
+   "text": "Perfecto. Consulto el pronóstico del sábado para armar el plan. Sábado es el 31, así reviso la lluvia hora por hora. Listo el pronóstico. Ahora lo pongo en la pared. Listo tu sábado. Actividad al aire libre a la mañana y regreso antes de la una, cuando empieza la lluvia."
+  }
+ ],
+ "flush_rid": "smoke-2",
+ "round_marks": [
+  {
+   "model": "muse-spark-1.3",
+   "ttft_ms": 398.28872399994,
+   "duration_ms": 647.5571729997682,
+   "tool_names": [
+    "escalate"
+   ],
+   "prompt_tokens": 1494,
+   "completion_tokens": 208
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "ttft_ms": 4601.188818999617,
+   "duration_ms": 4857.441387999643,
+   "tool_names": [
+    "get_weather"
+   ],
+   "prompt_tokens": 1447,
+   "completion_tokens": 558
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "ttft_ms": 4888.855232000424,
+   "duration_ms": 5152.596529999755,
+   "tool_names": [
+    "get_weather"
+   ],
+   "prompt_tokens": 2418,
+   "completion_tokens": 641
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "ttft_ms": 8961.375464999946,
+   "duration_ms": 9574.896468999214,
+   "tool_names": [
+    "set_day_plan"
+   ],
+   "prompt_tokens": 3409,
+   "completion_tokens": 1165
+  },
+  {
+   "model": "muse-wonder-1.0",
+   "ttft_ms": 1344.0460470001199,
+   "duration_ms": 1427.228980000109,
+   "tool_names": [],
+   "prompt_tokens": 3640,
+   "completion_tokens": 199
+  }
+ ],
+ "cost_usd": 0.0977
+}

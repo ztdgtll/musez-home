@@ -3,6 +3,9 @@
 Yields the same event shapes the live Spark client will yield:
   ("token", text_delta)          streamed reply text
   ("tool_call", name, args)      a function call decided by the model
+  ("ack", text)                  an escalation's spoken acknowledgement
+                                 (the plan turn: the mock stand-in for
+                                 Spark escalating to Wonder)
 
 Four canned turns cover the bridge's paths: a knowledge answer (fast
 path), a weather tool call, a wall scene tool call, and a day-plan
@@ -61,7 +64,13 @@ def plan_turn():
     composer (bridge/day_plan.py) turns it into the day plan, and
     the plan goes to the wall as a set_day_plan tool call — the same
     events a live planning model would emit, with numbers that come
-    only from the forecast."""
+    only from the forecast.
+
+    It opens with an ack event: in the live path this turn is an
+    escalation (Spark hands it to Wonder), and the ack is what the
+    room hears while the deep model works. The text mirrors what
+    Spark is asked to supply in its escalate call."""
+    yield ("ack", "Dame un momento, armo tu sábado.")
     saturday = _next_saturday()
     weather = yield ("tool_call", "get_weather", {"date": saturday})
     plan = compose_day_plan(weather or {}, date=saturday)

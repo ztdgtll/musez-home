@@ -130,6 +130,16 @@ class StudioSink:
     then passes it to the transport as a `scene` keyword on the same
     single call. Card-only turns call the transport exactly as
     before — the protocol grows only when a structured scene exists.
+
+    `announce()` is the sink's one immediate dispatch: an escalated
+    turn's spoken acknowledgement, sent through the same transport
+    the moment the turn escalates — while the deep model is still
+    working — under the same turn id. It carries an EMPTY scene
+    (no title, no lines): the acknowledgement composes nothing, the
+    turn's one composed wall scene still ships with the flush, and
+    the ack text never enters `sentences`, so the final answer never
+    repeats it. An ack failure is recorded on `self.ack` and
+    swallowed — the ack must never fail or delay the turn's answer.
     """
 
     def __init__(self, transport, turn=None, title: str = "", lines=()):
@@ -141,6 +151,7 @@ class StudioSink:
         self.sentences: list[str] = []
         self.events: list = []  # (perf_counter, kind) — stage marks
         self.receipt = None
+        self.ack: dict | None = None
 
     def set_scene(self, title: str, lines, scene: dict = None) -> None:
         lines = list(lines)
@@ -157,6 +168,31 @@ class StudioSink:
         if not self.sentences:
             self.events.append((time.perf_counter(), "first_say"))
         self.sentences.append(sentence)
+
+    def announce(self, text: str) -> dict:
+        """Dispatch the escalation acknowledgement NOW, on its own.
+
+        Same transport, same turn id, empty scene — see the class
+        docstring. Once only: a repeat call returns the recorded
+        outcome without dispatching again. Never raises: success,
+        transport failure and even a launch whose outcome is unknown
+        all come back as the outcome dict ({"ok": ...}) and stay on
+        `self.ack` for the turn record. A launch-unknown ack is NOT
+        retried — it may already be playing."""
+        if self.ack is not None:
+            return self.ack
+        self.events.append((time.perf_counter(), "ack_dispatch"))
+        try:
+            receipt = self.transport("", [], text, self.turn)
+            self.ack = {"ok": True, "text": text,
+                        "rid": receipt.get("rid") if receipt else None}
+        except LaunchUnknownError as e:
+            self.ack = {"ok": False, "text": text, "launch_unknown": True,
+                        "error": f"{type(e).__name__}: {e}"}
+        except Exception as e:
+            self.ack = {"ok": False, "text": text,
+                        "error": f"{type(e).__name__}: {e}"}
+        return self.ack
 
     def flush(self) -> dict:
         if self.receipt is not None:

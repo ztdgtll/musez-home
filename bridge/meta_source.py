@@ -4,6 +4,9 @@ Speaks the same events as `mock_source` —
 
   ("token", text_delta)        streamed reply text
   ("tool_call", name, args)    a room tool the model decided to call
+  ("ack", text)                the escalation acknowledgement: one short
+                               sentence the bridge speaks immediately
+                               while the deep model works (see below)
   ("note", text)               bridge-level events (e.g. an escalation)
 
 — plus one extension: after a `tool_call` event, the bridge sends the tool's
@@ -80,7 +83,10 @@ SYSTEM_PROMPT = (
     "set_day_plan to lay out a day plan as a timeline on the wall. When a "
     "request needs planning, weighing options, or several steps of "
     "reasoning, call escalate BEFORE answering: a deeper model will take "
-    "the turn from there. Use clean_studio to start the robot vacuum "
+    "the turn from there. When you escalate, pass an ack: one short "
+    "sentence in the user's language that the room speaks immediately "
+    "while the deeper model works (for example, 'Dame un momento, armo "
+    "tu sábado.'). Use clean_studio to start the robot vacuum "
     "cleaning the studio. "
     + SHORT_OPENER_GUIDANCE
 )
@@ -96,11 +102,54 @@ ESCALATE_SCHEMA = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {"reason": {"type": "string"}},
+            "properties": {
+                "reason": {"type": "string"},
+                "ack": {
+                    "type": "string",
+                    "description": (
+                        "One short sentence, in the user's language, "
+                        "that the room speaks aloud immediately while "
+                        "the deeper model works — the user hears it "
+                        "instead of silence. At most 60 characters, a "
+                        "single sentence."
+                    ),
+                },
+            },
             "required": ["reason"],
         },
     },
 }
+
+# The escalation acknowledgement (plan item 19). An escalated turn's
+# first deep-model sentence lands ~8 s after the hand-off (measured,
+# experiments/results/latency-live-prod-2026-10-29.md); until then the
+# room hears nothing, because Spark's buffered draft is discarded by
+# design. The ack covers that wait: Spark words it in the escalate
+# call (it knows the topic), the bridge validates it here, and the
+# turn loop speaks it at once through the room transport — a topic
+# text is never hard-coded in the bridge. A missing or malformed ack
+# degrades to the one fixed generic line, never to silence.
+ACK_FALLBACK = "Dame un momento."
+ACK_MAX_CHARS = 60
+
+
+def validate_ack(text) -> str:
+    """Spark's ack when it is one short sentence, else ACK_FALLBACK.
+
+    Whitespace is collapsed first (an ack is one spoken line), then
+    the line must be non-empty, within the character cap, and a
+    single sentence: at most one sentence-ending mark, at the end.
+    """
+    if not isinstance(text, str):
+        return ACK_FALLBACK
+    text = " ".join(text.split())
+    if not text or len(text) > ACK_MAX_CHARS:
+        return ACK_FALLBACK
+    endings = sum(text.count(c) for c in ".!?…")
+    if endings > 1 or (endings == 1
+                       and not text.endswith((".", "!", "?", "…"))):
+        return ACK_FALLBACK
+    return text
 
 
 class MetaAPIError(RuntimeError):
@@ -338,10 +387,13 @@ class MetaSource:
                 }
                 messages.append(assistant_msg)
                 try:
-                    reason = json.loads(escalation["args"] or "{}").get(
-                        "reason", "")
+                    esc_args = json.loads(escalation["args"] or "{}")
+                    if not isinstance(esc_args, dict):
+                        esc_args = {}
                 except ValueError:
-                    reason = ""
+                    esc_args = {}
+                reason = esc_args.get("reason", "")
+                ack = validate_ack(esc_args.get("ack"))
                 messages.append({
                     "role": "tool", "tool_call_id": escalation["tool_id"],
                     "content": json.dumps(
@@ -359,6 +411,12 @@ class MetaSource:
                     })
                 model = self.deep_model
                 escalated = True
+                # The ack goes out BEFORE the deep model's first
+                # round is even requested: the loop speaks it at once
+                # and it is the only sound the room makes until
+                # Wonder's first sentence. Exactly one per turn —
+                # `escalate` is never offered again after this.
+                yield ("ack", ack)
                 yield ("note", f"escalated to {self.deep_model}: {reason}")
                 continue
             # No escalation: release the round's buffered text, in order.
