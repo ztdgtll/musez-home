@@ -7,8 +7,10 @@ Pins the wiring contracts the room depends on:
   the system prompt the source actually sends — and the bare prompt
   is used, byte-identical, when no presence loads;
 - after the answer's last segment plays, the runner publishes the
-  turn's final wall state once (phase 5, sticky): the plan payload
-  for a plan turn, the composed card otherwise;
+  turn's final wall state once (phase 5, not sticky): the plan
+  payload for a plan turn, the composed card otherwise — and
+  schedules the wall's return home 15 s later (wall_apply's
+  return_home op, ownership re-checked on the Pi at fire time);
 - when playback is never observed, nothing is published and the
   record says so.
 
@@ -85,6 +87,10 @@ def make_sink(respond_runner):
         turn=TURN)
 
 
+def _inert_scheduler(delay, fn):
+    return None
+
+
 def base_kwargs(**over):
     kw = dict(
         wall_runner=make_wall_runner()[0],
@@ -95,6 +101,7 @@ def base_kwargs(**over):
         presence_reader=lambda: "",
         skip_record=True,
         publish_wait_s=5,
+        home_scheduler=_inert_scheduler,
     )
     kw.update(over)
     return kw
@@ -193,11 +200,14 @@ class PublishTests(unittest.TestCase):
         sink = make_sink(respond_runner)
         room = StudioRoom(TURN, speak=sink.say)
         wall_runner, wall_calls = make_wall_runner()
+        scheduled = []
         with mock.patch.dict(os.environ, {"MUSEZ_BRAIN": "bridge"}):
             record = run_live_turn(
                 "planificá mi sábado", TURN,
                 source=source, room=room, sink=sink,
-                **base_kwargs(wall_runner=wall_runner))
+                **base_kwargs(
+                    wall_runner=wall_runner,
+                    home_scheduler=lambda d, f: scheduled.append((d, f))))
         self.assertEqual(record["wall_outcome"], "plan")
         self.assertEqual(record["playback"], "played")
         self.assertEqual(record["wall_publish"], {"applied": True, "rc": 0})
@@ -205,7 +215,7 @@ class PublishTests(unittest.TestCase):
         payload = wall_calls[0]
         self.assertEqual(payload["turn"], TURN)
         self.assertEqual(payload["phase"], 5)
-        self.assertTrue(payload["sticky"])
+        self.assertFalse(payload.get("sticky"))
         kv = payload["kv"]
         self.assertEqual(kv["scene"], "plan")
         self.assertEqual(kv["title"], "Saturday plan")
@@ -215,6 +225,13 @@ class PublishTests(unittest.TestCase):
             kv["lines"],
             ["Compras en el supermercado · 11:00–13:00",
              "Lluvia · 16:00–19:00"])
+        # The result holds 15 s, then the wall goes home on its own.
+        self.assertEqual(record["home_return"],
+                         {"scheduled_s": 15.0, "expect_turn": TURN})
+        self.assertEqual([d for d, _ in scheduled], [15.0])
+        scheduled[0][1]()  # the timer fires: the home-return op is sent
+        self.assertEqual(wall_calls[-1],
+                         {"op": "return_home", "expect_turn": TURN})
 
     def test_card_turn_publishes_the_answer_scene(self):
         source = FakeSource([("token", "Hoy hace sol en Tamarac.")])
@@ -228,6 +245,8 @@ class PublishTests(unittest.TestCase):
                 source=source, room=room, sink=sink,
                 **base_kwargs(wall_runner=wall_runner))
         self.assertEqual(record["wall_publish"], {"applied": True, "rc": 0})
+        self.assertFalse(wall_calls[0].get("sticky"))
+        self.assertIsNotNone(record["home_return"])
         kv = wall_calls[0]["kv"]
         self.assertEqual(kv["scene"], "answer")
         self.assertEqual(kv["lines"], ["Hoy hace sol en Tamarac."])
@@ -249,6 +268,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(record["playback"], "not_observed")
         self.assertEqual(record["wall_publish"],
                          {"skipped": "last segment play not observed"})
+        self.assertIsNone(record["home_return"])
         self.assertEqual(wall_calls, [])
 
 

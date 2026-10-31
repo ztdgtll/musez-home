@@ -23,18 +23,22 @@ attached per request; no key is read from the environment, printed
 or logged.
 
 The turn's FINAL wall state is published by the runner, once, after
-the answer's last segment has played: setstate's sticky-result
-class at the ladder's last rank (phase 5), carrying the composed
-scene — the validated plan payload when the turn produced one,
-else the card. The live path needs this closing publish because
-sayseq publishes its own phase-4 card when playback STARTS, and an
-escalated turn's acknowledgement publishes an EMPTY phase-4 scene
-even earlier; the closing publish is the write that leaves the wall
-showing what the turn actually answered, as a sticky result only a
-newer turn (or the operator) replaces — the same result semantics
-the classic path's direct publishes use. When playback is never
-observed (the OFF-hours gate suppresses it, a transport failure),
-nothing is published and the record says why.
+the answer's last segment has played: the ladder's last rank
+(phase 5), carrying the composed scene — the validated plan payload
+when the turn produced one, else the card. The live path needs this
+closing publish because sayseq publishes its own phase-4 card when
+playback STARTS, and an escalated turn's acknowledgement publishes
+an EMPTY phase-4 scene even earlier; the closing publish is the
+write that leaves the wall showing what the turn actually answered.
+The result then holds for RESULT_HOLD_S seconds and the wall
+returns home on its own — Javier's rule (2026-10-31: he preferred
+the classic behaviour, a result that shows briefly and goes home,
+over a sticky result that waits to be replaced). The return is
+scheduled by the runner and executed by wall_apply's return_home
+op, which re-checks ownership on the Pi at fire time and writes
+nothing if a newer turn owns the wall by then. When playback is
+never observed (the OFF-hours gate suppresses it, a transport
+failure), nothing is published and the record says why.
 
 The API switch gates everything: with the switch off, the refusal
 is recorded and the runner exits 3 before any network-shaped work —
@@ -52,6 +56,7 @@ import argparse
 import json
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -87,6 +92,7 @@ PI_TZ = ZoneInfo("America/New_York")
 
 LIVE_DEADLINE_S = 60.0
 PUBLISH_WAIT_S = 120.0
+RESULT_HOLD_S = 15.0
 PRESENCE_CMD = "cat /home/ztdgtll/.musez-presence.md"
 PLAYGATE_LOG = "/home/ztdgtll/pared-tools/playgate.log"
 
@@ -152,14 +158,43 @@ def _played_done(sayseq_text: str, rid: str, last_index: int) -> bool:
 def publish_final_scene(turn_id: int, title: str, lines: list,
                         plan, wall_runner=None) -> dict:
     """The turn's closing wall publish (module docstring): phase 5,
-    sticky, the composed scene — plan payload included when the
+    NOT sticky — the composed scene, plan payload included when the
     turn produced one. Returns wall_apply's parsed reply."""
     kv: dict = {"scene": "plan" if plan else "answer",
                 "title": title, "lines": lines, "avatar": "idle"}
     if plan:
         kv["plan"] = plan
-    payload = {"turn": turn_id, "phase": 5, "sticky": True, "kv": kv}
+    payload = {"turn": turn_id, "phase": 5, "kv": kv}
     return SshJsonRunner(WALL_APPLY_CMD, runner=wall_runner)(payload)
+
+
+def _timer_scheduler(delay_s: float, fn):
+    timer = threading.Timer(delay_s, fn)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def schedule_home_return(turn_id: int, delay_s: float = RESULT_HOLD_S,
+                         *, wall_runner=None, scheduler=None) -> dict:
+    """Send the wall home once the result has had its seconds.
+
+    The write is wall_apply's return_home op, fired after delay_s;
+    ownership is re-checked on the Pi at fire time, so a newer turn
+    that took the wall in the meantime is never displaced. A failure
+    is printed, never raised — the turn's answer already landed, and
+    a wall left showing it is a cosmetic fault, not a failed turn."""
+    def _fire() -> None:
+        try:
+            reply = SshJsonRunner(WALL_APPLY_CMD, runner=wall_runner)(
+                {"op": "return_home", "expect_turn": turn_id})
+            print(f"live turn {turn_id}: home return -> {reply}")
+        except Exception as e:  # the timer thread must never die loud
+            print(f"live turn {turn_id}: home return failed: "
+                  f"{type(e).__name__}: {e}")
+
+    (scheduler or _timer_scheduler)(delay_s, _fire)
+    return {"scheduled_s": delay_s, "expect_turn": turn_id}
 
 
 # -- one live turn ------------------------------------------------------
@@ -171,7 +206,9 @@ def run_live_turn(transcript: str, turn_id: int, *,
                   gate_reader=None, wall_reader=None,
                   presence_reader=None, results=None, skip_record=False,
                   deadline_s: float = LIVE_DEADLINE_S,
-                  publish_wait_s: float = PUBLISH_WAIT_S) -> dict:
+                  publish_wait_s: float = PUBLISH_WAIT_S,
+                  home_scheduler=None,
+                  home_delay_s: float = RESULT_HOLD_S) -> dict:
     """Run one live turn end to end and return its record (also
     appended to the live results JSONL unless skip_record).
 
@@ -191,6 +228,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
             "rid": None, "playback": "skipped", "turn_error": None,
             "tool_calls": [], "ack": None, "sentences": [],
             "presence_loaded": False, "wall_publish": None,
+            "home_return": None,
             "wall_after": {},
         }
         _append_record(record, results, skip_record)
@@ -252,6 +290,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
     playback = "no_launch"
     t_first_audio_ms = None
     wall_publish = None
+    home_return = None
     if receipt and receipt.get("launch_unknown"):
         playback = "launch_unknown"
     elif turn_error is not None and not rid:
@@ -282,6 +321,9 @@ def run_live_turn(transcript: str, turn_id: int, *,
                     playback = "played"
                 wall_publish = publish_final_scene(
                     turn_id, title, lines, plan, wall_runner=wall_runner)
+                home_return = schedule_home_return(
+                    turn_id, home_delay_s,
+                    wall_runner=wall_runner, scheduler=home_scheduler)
                 break
             if time.monotonic() >= wait_deadline:
                 if playback == "pending":
@@ -319,6 +361,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
         "plan": plan,
         "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_publish": wall_publish,
+        "home_return": home_return,
         "wall_after": wall,
     }
     _append_record(record, results, skip_record)

@@ -580,6 +580,42 @@ class WallApplyTests(unittest.TestCase):
                     wall_apply.build_argv({**base, "kv": kv})
                 self.assertIn(limit, str(ctx.exception))
 
+    def _with_wall_state(self, state):
+        tmp = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False)
+        json.dump(state, tmp)
+        tmp.close()
+        old = wall_apply.STATE_PATH
+        wall_apply.STATE_PATH = tmp.name
+        self.addCleanup(setattr, wall_apply, "STATE_PATH", old)
+        self.addCleanup(os.unlink, tmp.name)
+
+    def test_return_home_writes_home_while_the_turn_owns_the_wall(self):
+        self._with_wall_state({"turn": 42, "scene": "answer"})
+        ran = []
+        result = wall_apply.apply(
+            {"op": "return_home", "expect_turn": 42},
+            runner=lambda a: ran.append(a) or FakeProc(0))
+        self.assertEqual(result, {"applied": True, "rc": 0})
+        self.assertEqual(len(ran), 1)
+        self.assertIn("--manual", ran[0])
+        self.assertIn("scene=home", ran[0])
+
+    def test_return_home_refuses_when_a_newer_turn_owns_the_wall(self):
+        self._with_wall_state({"turn": 43, "scene": "answer"})
+        ran = []
+        result = wall_apply.apply(
+            {"op": "return_home", "expect_turn": 42},
+            runner=lambda a: ran.append(a) or FakeProc(0))
+        self.assertEqual(result["applied"], False)
+        self.assertEqual(result["rc"], 4)
+        self.assertEqual(ran, [])  # nothing written
+
+    def test_return_home_validates_expect_turn(self):
+        with self.assertRaises(ValueError):
+            wall_apply.apply({"op": "return_home", "expect_turn": "42"},
+                             runner=lambda a: FakeProc(0))
+
 
 class PickTurnTests(unittest.TestCase):
     def test_transcripts_route_to_canned_turns(self):

@@ -12,6 +12,14 @@ Input (one JSON object on stdin):
     {"turn": <int>, "phase": <int>, "sticky": <bool, optional>,
      "kv": {"scene": ..., "avatar": ..., "title": ..., "lines": [...]}}
 
+    {"op": "return_home", "expect_turn": <int>} — the delayed
+    home-return: if the wall still belongs to expect_turn, write the
+    home scene (operator-class --manual write, the same key set
+    sayseq's own closing write uses); if a newer turn owns the wall,
+    refuse with rc 4 and write nothing. The ownership check reads
+    state.json HERE, on the Pi, in the same process as the write, so
+    the check and the write sit milliseconds apart.
+
 A day-plan scene travels as kv {"scene": "plan", "plan": {...}} — the
 structured payload bridge/day_plan.py validates (title, date and an
 ordered block list). It is validated here too, to the same limits,
@@ -37,6 +45,9 @@ import subprocess
 import sys
 
 SETSTATE = os.environ.get("WALL_APPLY_SETSTATE", "/home/ztdgtll/pared/setstate.py")
+STATE_PATH = os.environ.get(
+    "WALL_APPLY_STATE",
+    os.path.join(os.path.dirname(SETSTATE), "state.json"))
 
 # The bridge may only touch scene-content keys — never bookkeeping.
 ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave", "plan"}
@@ -203,7 +214,38 @@ def build_argv(payload: dict) -> list:
     return argv
 
 
+def build_home_argv() -> list:
+    """The home scene as an operator-class write — sayseq's closing
+    key set, verbatim: a --manual merge applies without touching
+    turn/phase/floor bookkeeping, so a late home-return can never
+    wedge a newer turn's own writes."""
+    return ["python3", SETSTATE, "--manual",
+            "scene=home", "avatar=idle", "live=false", "title=",
+            "lines=[]", "text=studiolab online", "expiresAt=null"]
+
+
+def _return_home(payload: dict, runner=None) -> dict:
+    expect = payload.get("expect_turn")
+    if not isinstance(expect, int) or isinstance(expect, bool):
+        raise ValueError("expect_turn must be an int")
+    try:
+        with open(STATE_PATH) as f:
+            state = json.load(f)
+    except Exception:
+        return {"applied": False, "rc": 4, "error": "wall state unreadable"}
+    if state.get("turn") != expect:
+        return {"applied": False, "rc": 4,
+                "error": "wall owned by another turn"}
+    run = runner or (lambda a: subprocess.run(a, capture_output=True, text=True))
+    proc = run(build_home_argv())
+    return {"applied": proc.returncode == 0, "rc": proc.returncode}
+
+
 def apply(payload: dict, runner=None) -> dict:
+    if isinstance(payload, dict) and payload.get("op") is not None:
+        if payload["op"] != "return_home":
+            raise ValueError(f"unknown op: {payload['op']!r}")
+        return _return_home(payload, runner)
     argv = build_argv(payload)
     run = runner or (lambda a: subprocess.run(a, capture_output=True, text=True))
     proc = run(argv)
