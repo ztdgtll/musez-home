@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 *.log
 .DS_Store
+
+# Shooting script stays local (not part of the public repo)
+docs/demo-script.md
