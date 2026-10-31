@@ -22,16 +22,22 @@ experiments/probe_live_prod.py: a dynamic credential surrogate is
 attached per request; no key is read from the environment, printed
 or logged.
 
-The turn's FINAL wall state is published by the runner, once, after
-the answer's last segment has played: the ladder's last rank
-(phase 5), carrying the composed scene — the validated plan payload
-when the turn produced one, else the card. The live path needs this
-closing publish because sayseq publishes its own phase-4 card when
-playback STARTS, and an escalated turn's acknowledgement publishes
-an EMPTY phase-4 scene even earlier; the closing publish is the
-write that leaves the wall showing what the turn actually answered.
-The result then holds for RESULT_HOLD_S seconds and the wall
-returns home on its own — Javier's rule (2026-10-31: he preferred
+The turn's FINAL wall state is published by the runner, once, the
+moment the answer's FIRST segment is observed playing: the
+ladder's last rank (phase 5), carrying the composed scene — the
+validated plan payload when the turn produced one, else the card.
+The live path needs this publish because sayseq publishes its own
+phase-4 card when playback STARTS, and an escalated turn's
+acknowledgement publishes an EMPTY phase-4 scene even earlier;
+the phase-5 publish is the write that leaves the wall showing
+what the turn actually answered. It must fire at first play, not
+after the last segment: sayseq also writes its own phase-5 close
+seconds after playback starts (room evidence 2026-10-31), and a
+publish that waits for the last PLAY_DONE loses that race and is
+dropped by the guard (rc=4), leaving the wall on the empty
+acknowledgement scene. The result then holds for RESULT_HOLD_S
+seconds past the end of playback and the wall returns home on
+its own — Javier's rule (2026-10-31: he preferred
 the classic behaviour, a result that shows briefly and goes home,
 over a sticky result that waits to be replaced). The return is
 scheduled by the runner and executed by wall_apply's return_home
@@ -283,9 +289,11 @@ def run_live_turn(transcript: str, turn_id: int, *,
             turn_error = f"{type(e).__name__}: {e}"
         receipt = sink.receipt
 
-    # Playback, read back from the player's own log — and, once the
-    # LAST segment has played, the closing wall publish. Polling
-    # stops early when the gate suppressed playback outright.
+    # Playback, read back from the player's own log — the closing
+    # wall publish fires at the FIRST observed play (the module
+    # docstring has the phase-5 race), the home return is armed
+    # once the LAST segment has played. Polling stops early when
+    # the gate suppressed playback outright.
     rid = receipt.get("rid") if receipt else None
     playback = "no_launch"
     t_first_audio_ms = None
@@ -304,6 +312,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
         read_gate = gate_reader or (lambda: _ssh_cat(gate_cmd))
         last_idx = max(0, len(sink.sentences) - 1)
         wait_deadline = time.monotonic() + publish_wait_s
+        published = False
         while True:
             seq_text = read_seq()
             status = playback_status(rid, seq_text, read_gate())
@@ -316,11 +325,21 @@ def run_live_turn(transcript: str, turn_id: int, *,
             if playback == "suppressed_off":
                 wall_publish = {"skipped": "playback suppressed (OFF hours)"}
                 break
+            if playback == "played" and not published:
+                # First segment is playing: publish NOW. sayseq's
+                # own phase-5 close lands seconds later and would
+                # win the phase, dropping this publish (rc=4) and
+                # leaving the acknowledgement's empty scene up.
+                wall_publish = publish_final_scene(
+                    turn_id, title, lines, plan, wall_runner=wall_runner)
+                published = True
             if _played_done(seq_text, rid, last_idx):
                 if playback == "pending":
                     playback = "played"
-                wall_publish = publish_final_scene(
-                    turn_id, title, lines, plan, wall_runner=wall_runner)
+                if not published:
+                    wall_publish = publish_final_scene(
+                        turn_id, title, lines, plan, wall_runner=wall_runner)
+                    published = True
                 home_return = schedule_home_return(
                     turn_id, home_delay_s,
                     wall_runner=wall_runner, scheduler=home_scheduler)
@@ -328,7 +347,12 @@ def run_live_turn(transcript: str, turn_id: int, *,
             if time.monotonic() >= wait_deadline:
                 if playback == "pending":
                     playback = "not_observed"
-                wall_publish = {"skipped": "last segment play not observed"}
+                if not published:
+                    wall_publish = {"skipped": "last segment play not observed"}
+                elif home_return is None:
+                    home_return = schedule_home_return(
+                        turn_id, home_delay_s,
+                        wall_runner=wall_runner, scheduler=home_scheduler)
                 break
             time.sleep(0.5)
     wall = (wall_reader or read_wall_state)()
