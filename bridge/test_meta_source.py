@@ -16,7 +16,8 @@ import unittest
 
 from .meta_source import (MAX_ROUNDS, SHORT_OPENER_GUIDANCE,
                           SPARK_MAX_TOKENS, SPARK_REASONING_EFFORT,
-                          WONDER_MAX_TOKENS, MetaAPIError, MetaSource)
+                          SYSTEM_PROMPT, WONDER_MAX_TOKENS, MetaAPIError,
+                          MetaSource, compose_system_prompt)
 from .tools import TOOL_SCHEMAS, DryRoom
 from .turn import PrintSink, run_turn
 
@@ -390,6 +391,37 @@ class ErrorTests(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["META_API_KEY"] = old
+
+
+class ComposeSystemPromptTests(unittest.TestCase):
+    """The presence block: appended verbatim after the bare prompt
+    when loaded, and the bare prompt — byte-identical — when not.
+    The measured probes all ran the bare prompt; loading presence
+    must be an explicit, visible change, never a silent drift."""
+
+    def test_absent_presence_is_the_bare_prompt(self):
+        self.assertEqual(compose_system_prompt(), SYSTEM_PROMPT)
+        self.assertEqual(compose_system_prompt(None), SYSTEM_PROMPT)
+        self.assertEqual(compose_system_prompt(""), SYSTEM_PROMPT)
+        self.assertEqual(compose_system_prompt("  \n "), SYSTEM_PROMPT)
+
+    def test_presence_is_appended_after_the_prompt(self):
+        presence = "PRESENCE — who you are, who he is.\n- His Saturday: slow."
+        out = compose_system_prompt(presence)
+        self.assertTrue(out.startswith(SYSTEM_PROMPT))
+        self.assertTrue(out.endswith(presence))
+        self.assertIn("\n\n", out[len(SYSTEM_PROMPT):])
+
+    def test_source_speaks_with_the_composed_prompt(self):
+        transport = FakeTransport([[content("Hola."), DONE]])
+        source = MetaSource(
+            transport=transport,
+            system_prompt=compose_system_prompt("PRESENCE test block"))
+        run(source, "hola")
+        system = transport.requests[0]["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertTrue(system["content"].startswith(SYSTEM_PROMPT))
+        self.assertTrue(system["content"].endswith("PRESENCE test block"))
 
 
 if __name__ == "__main__":

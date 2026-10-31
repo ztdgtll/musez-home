@@ -91,6 +91,23 @@ SYSTEM_PROMPT = (
     + SHORT_OPENER_GUIDANCE
 )
 
+def compose_system_prompt(presence: str | None = None) -> str:
+    """The system prompt a live source speaks with: the bare
+    SYSTEM_PROMPT, or SYSTEM_PROMPT + the room's presence block.
+
+    The presence file — the user's distilled memory plus the
+    assistant's persona extract, approved by Javier on 2026-10-31 —
+    lives ONLY on the studio Pi and is read at runtime by the live
+    runner (bridge/live_turn.py); it is never part of this
+    repository and never committed. Absent or empty presence is not
+    an error: the bridge then speaks with the bare prompt, exactly
+    as every measured probe did, and the turn record says which
+    happened (presence_loaded) instead of leaving it implicit."""
+    if not presence or not presence.strip():
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + "\n\n" + presence.strip()
+
+
 ESCALATE_SCHEMA = {
     "type": "function",
     "function": {
