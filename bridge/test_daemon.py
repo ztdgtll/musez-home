@@ -3,8 +3,10 @@
 Pins: queue parsing keeps only complete, well-shaped entries (a
 line mid-append can neither wedge nor fake a turn), the Pi-side
 switch gate drains an entry as a recorded refusal when the Pi says
-non-bridge — without ever calling the live runner — and a bridge
-entry reaches the runner with the listener's own turn id.
+non-bridge — without ever calling the live runner — an entry older
+than the staleness bound drains as a recorded skip without ever
+reaching the gate or the runner, and a bridge entry reaches the
+runner with the listener's own turn id.
 
 Run from the repo root:  python3 -m unittest bridge.test_daemon -v
 """
@@ -134,6 +136,47 @@ class ProcessEntryTests(unittest.TestCase):
         with mock.patch.object(daemon, "run_live_turn", boom):
             daemon.process_entry({"turn": 444, "text": "hola"},
                                  mode_reader=lambda: '{"mode": "bridge"}')
+
+    def test_stale_entry_is_recorded_and_never_run(self):
+        # A queue that backed up while the daemon was down must not
+        # fire its turns late: past STALE_AFTER_S the entry drains
+        # as a recorded skip — no gate read, no runner, no speech.
+        gate_reads = []
+
+        def reader():
+            gate_reads.append(1)
+            return '{"mode": "bridge"}'
+
+        entry = {"turn": 999, "text": "turno viejo", "ts": 1_000_000.0}
+        daemon.process_entry(entry, mode_reader=reader, now=1_000_200.0)
+        self.assertEqual(self.ran, [])
+        self.assertEqual(gate_reads, [])
+        lines = self.results.read_text().strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["mode"], "stale_skipped")
+        self.assertEqual(record["source"], "daemon_stale")
+        self.assertEqual(record["turn_id"], 999)
+        self.assertEqual(record["queue_ts"], 1_000_000.0)
+        self.assertEqual(record["age_s"], 200.0)
+        self.assertEqual(record["playback"], "skipped")
+
+    def test_fresh_entry_still_runs(self):
+        entry = {"turn": 111, "text": "hola", "ts": 1_000_000.0}
+        daemon.process_entry(entry,
+                             mode_reader=lambda: '{"mode": "bridge"}',
+                             now=1_000_010.0)
+        self.assertEqual(self.ran, [("hola", 111)])
+        self.assertFalse(self.results.exists())
+
+    def test_entry_without_a_timestamp_still_runs(self):
+        # Dropping a turn that might be live is the worse failure:
+        # only a KNOWN-old entry is skipped.
+        entry = {"turn": 222, "text": "sin ts"}
+        daemon.process_entry(entry,
+                             mode_reader=lambda: '{"mode": "bridge"}',
+                             now=9_999_999.0)
+        self.assertEqual(self.ran, [("sin ts", 222)])
 
 
 if __name__ == "__main__":

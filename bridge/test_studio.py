@@ -105,6 +105,28 @@ class SinkTests(unittest.TestCase):
         self.assertEqual(seen["argv"], ["/x/respond2.sh", "Title", "l1", "", "Hola."])
         self.assertEqual(seen["env"]["RESPOND_TURN"], "1793000000001")
 
+    def test_announce_marks_the_dispatch_as_an_acknowledgement(self):
+        # The ack is audio only: the room's real transport forwards
+        # the mark as RESPOND_KIND so the Pi-side player speaks the
+        # acknowledgement without any wall writes (the turn's scene
+        # ladder belongs to the answer session alone).
+        seen = {}
+
+        def runner(argv, env):
+            seen["argv"] = argv
+            seen["env"] = env
+            return FakeProc(0, "LAUNCHED id=ack-1 turn=7 pid=3\n")
+
+        sink = StudioSink(
+            Respond2Transport(script="/x/respond2.sh", runner=runner),
+            turn=7)
+        outcome = sink.announce("Dame un momento.")
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["rid"], "ack-1")
+        self.assertEqual(seen["env"]["RESPOND_KIND"], "ack")
+        self.assertEqual(seen["argv"],
+                         ["/x/respond2.sh", "", "", "", "Dame un momento."])
+
     def test_transport_failure_is_loud(self):
         transport = Respond2Transport(
             script="/x/respond2.sh",
@@ -422,6 +444,40 @@ class TransportHardeningTests(unittest.TestCase):
                 os.environ["META_API_KEY"] = old
         self.assertNotIn("META_API_KEY", seen["env"])
         self.assertEqual(seen["env"]["RESPOND_TURN"], "1")
+
+    def test_kind_travels_as_the_respond_kind_env(self):
+        seen = {}
+
+        def runner(argv, env):
+            seen["env"] = env
+            return FakeProc(0, "LAUNCHED id=r1 turn=1 pid=7\n")
+
+        transport = Respond2Transport(script="/x/respond2.sh", runner=runner)
+        transport("T", [], "Hola.", 1, kind="ack")
+        self.assertEqual(seen["env"]["RESPOND_KIND"], "ack")
+
+    def test_kindless_dispatch_strips_an_inherited_respond_kind(self):
+        # A kind is set explicitly per dispatch, never ambient: an
+        # answer dispatch must not inherit a stray RESPOND_KIND from
+        # the daemon's own environment and turn into a silent ack.
+        seen = {}
+
+        def runner(argv, env):
+            seen["env"] = env
+            return FakeProc(0, "LAUNCHED id=r1 turn=1 pid=7\n")
+
+        old = os.environ.get("RESPOND_KIND")
+        os.environ["RESPOND_KIND"] = "ack"
+        try:
+            transport = Respond2Transport(script="/x/respond2.sh",
+                                          runner=runner)
+            transport("T", [], "Hola.", 1)
+        finally:
+            if old is None:
+                os.environ.pop("RESPOND_KIND", None)
+            else:
+                os.environ["RESPOND_KIND"] = old
+        self.assertNotIn("RESPOND_KIND", seen["env"])
 
     def test_timeout_becomes_a_transport_error(self):
         def runner(argv, env):

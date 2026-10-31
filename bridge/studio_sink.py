@@ -70,10 +70,24 @@ class Respond2Transport:
     `scene` keyword: respond2's contract is exactly four arguments, so
     the card summary composed from the same plan (title + lines) is
     what it carries, and the validated payload is recorded on the
-    receipt. Forwarding the payload itself to the wall page is the
-    pending prototype step — the wall does not render structured
-    scenes yet (see day_plan.py's contract boundary).
+    receipt. The runner publishes the payload itself to the wall at
+    first play (bridge/live_turn.py).
+
+    A dispatch's ROLE in the turn rides as the `kind` keyword and
+    travels env -> payload: respond2.sh copies a non-empty
+    RESPOND_KIND into the payload's "kind" field (a payload without
+    the field is byte-identical to the classic path's), and the Pi's
+    respond_recv acts on it. The one kind today is "ack": an
+    acknowledgement is spoken WITHOUT any wall writes — sayseq skips
+    its phase-4 scene and its phase-5 close for the session — because
+    the turn's scene ladder belongs to the answer session alone
+    (room evidence 2026-10-31: an ack session's writes consumed both
+    phases before the answer could publish, and every escalated
+    turn's closing publish was dropped by the wall guard, rc=4).
     """
+
+    # The sink passes `kind` only to transports that declare this.
+    supports_kind = True
 
     def __init__(self, script: str = None, runner=None):
         self.script = script or os.environ.get("BRIDGE_RESPOND2_PATH", DEFAULT_RESPOND2)
@@ -85,14 +99,20 @@ class Respond2Transport:
         )
 
     def __call__(self, title: str, lines: list, text: str, turn,
-                 scene: dict = None) -> dict:
+                 scene: dict = None, kind: str = None) -> dict:
         line1 = lines[0] if len(lines) > 0 else ""
         line2 = lines[1] if len(lines) > 1 else ""
         # The bridge's API key is not the room's business: respond2
-        # gets the environment minus META_API_KEY.
-        env = {k: v for k, v in os.environ.items() if k != "META_API_KEY"}
+        # gets the environment minus META_API_KEY. A RESPOND_KIND
+        # inherited from our own process environment is stripped the
+        # same way — a dispatch's kind is set explicitly per call,
+        # never ambient.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("META_API_KEY", "RESPOND_KIND")}
         if turn is not None:
             env["RESPOND_TURN"] = str(turn)
+        if kind:
+            env["RESPOND_KIND"] = kind
         try:
             proc = self._run(
                 [self.script, title, line1, line2, _cap_text(text)], env)
@@ -134,12 +154,15 @@ class StudioSink:
     `announce()` is the sink's one immediate dispatch: an escalated
     turn's spoken acknowledgement, sent through the same transport
     the moment the turn escalates — while the deep model is still
-    working — under the same turn id. It carries an EMPTY scene
-    (no title, no lines): the acknowledgement composes nothing, the
-    turn's one composed wall scene still ships with the flush, and
-    the ack text never enters `sentences`, so the final answer never
-    repeats it. An ack failure is recorded on `self.ack` and
-    swallowed — the ack must never fail or delay the turn's answer.
+    working — under the same turn id, marked kind="ack". The mark
+    matters: an acknowledgement is audio only. Its player session
+    writes NO wall state (no phase-4 scene, no phase-5 close), so
+    the turn's scene ladder belongs to the answer session alone and
+    the wall keeps the listener's working scene while the deep
+    model thinks. The ack text never enters `sentences`, so the
+    final answer never repeats it. An ack failure is recorded on
+    `self.ack` and swallowed — the ack must never fail or delay
+    the turn's answer.
     """
 
     def __init__(self, transport, turn=None, title: str = "", lines=()):
@@ -169,21 +192,36 @@ class StudioSink:
             self.events.append((time.perf_counter(), "first_say"))
         self.sentences.append(sentence)
 
+    def _dispatch(self, title: str, lines, text: str, kind: str = None):
+        """One transport call for this turn.
+
+        A `kind` (the dispatch's role in the turn) is passed only to
+        transports that declare `supports_kind`: plain callables —
+        test doubles, older transports — keep the original
+        four-argument contract and simply never mark a dispatch.
+        Only the room's real transport needs the mark."""
+        if kind is not None and getattr(self.transport,
+                                        "supports_kind", False):
+            return self.transport(title, lines, text, self.turn,
+                                  kind=kind)
+        return self.transport(title, lines, text, self.turn)
+
     def announce(self, text: str) -> dict:
         """Dispatch the escalation acknowledgement NOW, on its own.
 
-        Same transport, same turn id, empty scene — see the class
-        docstring. Once only: a repeat call returns the recorded
-        outcome without dispatching again. Never raises: success,
-        transport failure and even a launch whose outcome is unknown
-        all come back as the outcome dict ({"ok": ...}) and stay on
-        `self.ack` for the turn record. A launch-unknown ack is NOT
-        retried — it may already be playing."""
+        Same transport, same turn id, kind="ack" — audio only, no
+        wall writes; see the class docstring. Once only: a repeat
+        call returns the recorded outcome without dispatching again.
+        Never raises: success, transport failure and even a launch
+        whose outcome is unknown all come back as the outcome dict
+        ({"ok": ...}) and stay on `self.ack` for the turn record.
+        A launch-unknown ack is NOT retried — it may already be
+        playing."""
         if self.ack is not None:
             return self.ack
         self.events.append((time.perf_counter(), "ack_dispatch"))
         try:
-            receipt = self.transport("", [], text, self.turn)
+            receipt = self._dispatch("", [], text, kind="ack")
             self.ack = {"ok": True, "text": text,
                         "rid": receipt.get("rid") if receipt else None}
         except LaunchUnknownError as e:

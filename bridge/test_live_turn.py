@@ -271,6 +271,35 @@ class PublishTests(unittest.TestCase):
         self.assertIsNone(record["home_return"])
         self.assertEqual(wall_calls, [])
 
+    def test_ack_without_an_answer_still_returns_the_wall_home(self):
+        # The turn escalated and spoke its acknowledgement, then
+        # produced no answer sentences at all: no answer session
+        # exists to walk the wall home, so the runner schedules the
+        # ownership-checked return itself — and publishes nothing.
+        source = FakeSource([("ack", "Dame un momento, armo tu sábado.")])
+        respond_runner, _ = make_respond_runner()
+        sink = make_sink(respond_runner)
+        room = StudioRoom(TURN, speak=sink.say)
+        wall_runner, wall_calls = make_wall_runner()
+        scheduled = []
+        with mock.patch.dict(os.environ, {"MUSEZ_BRAIN": "bridge"}):
+            record = run_live_turn(
+                "planificá mi sábado", TURN,
+                source=source, room=room, sink=sink,
+                **base_kwargs(
+                    wall_runner=wall_runner,
+                    home_scheduler=lambda d, f: scheduled.append((d, f))))
+        self.assertIsNotNone(sink.ack)
+        self.assertTrue(sink.ack["ok"])
+        self.assertIsNone(record["rid"])
+        self.assertIsNone(record["wall_publish"])
+        self.assertEqual(record["home_return"],
+                         {"scheduled_s": 15.0, "expect_turn": TURN})
+        self.assertEqual([d for d, _ in scheduled], [15.0])
+        scheduled[0][1]()  # the timer fires: the home-return op is sent
+        self.assertEqual(wall_calls,
+                         [{"op": "return_home", "expect_turn": TURN}])
+
 
 if __name__ == "__main__":
     unittest.main()

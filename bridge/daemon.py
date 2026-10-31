@@ -16,9 +16,17 @@ Before any paid call, each entry is re-gated where the listener
 read the switch — the Pi's own ~/.musez-brain.json: an explicit
 non-bridge mode there drains the entry as a recorded switch-off
 refusal instead of spending (the live runner's own gate, on this
-machine, is the second lock). A crash on one entry is recorded and
-never stops the loop; a lost ssh connection just delays the drain,
-and entries are only marked done after they were processed, so a
+machine, is the second lock). An entry whose queue timestamp is
+older than STALE_AFTER_S when its turn comes up is drained the
+same way — recorded "stale_skipped", never run, never spoken: a
+queue that backed up while the daemon was down must not fire its
+turns late, on top of whatever the room did meanwhile (room
+evidence 2026-10-31: a revived daemon spoke a 3-minute-old turn
+over the response watchdog's own lines). Entries without a
+timestamp still run — dropping a turn that might be live is the
+worse failure. A crash on one entry is recorded and never stops
+the loop; a lost ssh connection just delays the drain, and
+entries are only marked done after they were processed, so a
 restart resumes mid-queue instead of losing turns.
 
 State (how many queue lines are done, plus a heartbeat) persists
@@ -44,6 +52,7 @@ STATE_DIR = Path("~/.musez-bridge").expanduser()
 STATE_PATH = STATE_DIR / "state.json"
 LOCK_PATH = STATE_DIR / "daemon.lock"
 POLL_S = 0.7
+STALE_AFTER_S = 90.0
 
 
 def log(msg: str) -> None:
@@ -151,12 +160,38 @@ def _record_gate_refusal(entry: dict, mode: str) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def process_entry(entry: dict, mode_reader=None) -> None:
-    """One queue entry: the Pi-side gate first, then the live turn.
+def _record_stale_skip(entry: dict, age_s: float) -> None:
+    record = {
+        "mode": "stale_skipped", "source": "daemon_stale",
+        "brain_mode": None, "ts": time.time(),
+        "transcript": entry["text"], "turn_id": entry["turn"],
+        "queue_ts": entry.get("ts"), "age_s": round(age_s, 1),
+        "rid": None, "playback": "skipped", "turn_error": None,
+        "tool_calls": [], "ack": None, "sentences": [],
+        "presence_loaded": False, "wall_publish": None, "wall_after": {},
+    }
+    RESULTS_DEFAULT.parent.mkdir(parents=True, exist_ok=True)
+    with open(RESULTS_DEFAULT, "a") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def process_entry(entry: dict, mode_reader=None, now: float = None) -> None:
+    """One queue entry: the staleness check first (module
+    docstring), then the Pi-side gate, then the live turn.
     Never raises — a failure is recorded or logged, and the caller
     still marks the entry done (a poison entry must not wedge the
     queue; the response watchdog remains the room's safety net for
     a turn whose answer never landed)."""
+    queue_ts = entry.get("ts")
+    if (isinstance(queue_ts, (int, float))
+            and not isinstance(queue_ts, bool)):
+        age_s = (time.time() if now is None else now) - float(queue_ts)
+        if age_s > STALE_AFTER_S:
+            _record_stale_skip(entry, age_s)
+            log(f"turn {entry['turn']}: queued {age_s:.0f} s ago "
+                f"(> {STALE_AFTER_S:.0f} s) — skipped as stale, "
+                f"not run, not spoken")
+            return
     mode = pi_brain_mode(mode_reader)
     if mode is not None and mode != "bridge":
         _record_gate_refusal(entry, mode)

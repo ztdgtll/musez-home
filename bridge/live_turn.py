@@ -26,25 +26,35 @@ The turn's FINAL wall state is published by the runner, once, the
 moment the answer's FIRST segment is observed playing: the
 ladder's last rank (phase 5), carrying the composed scene — the
 validated plan payload when the turn produced one, else the card.
-The live path needs this publish because sayseq publishes its own
-phase-4 card when playback STARTS, and an escalated turn's
-acknowledgement publishes an EMPTY phase-4 scene even earlier;
-the phase-5 publish is the write that leaves the wall showing
-what the turn actually answered. It must fire at first play, not
-after the last segment: sayseq also writes its own phase-5 close
-seconds after playback starts (room evidence 2026-10-31), and a
-publish that waits for the last PLAY_DONE loses that race and is
-dropped by the guard (rc=4), leaving the wall on the empty
-acknowledgement scene. The result then holds for RESULT_HOLD_S
-seconds past the end of playback and the wall returns home on
-its own — Javier's rule (2026-10-31: he preferred
-the classic behaviour, a result that shows briefly and goes home,
-over a sticky result that waits to be replaced). The return is
-scheduled by the runner and executed by wall_apply's return_home
-op, which re-checks ownership on the Pi at fire time and writes
-nothing if a newer turn owns the wall by then. When playback is
-never observed (the OFF-hours gate suppresses it, a transport
-failure), nothing is published and the record says why.
+The answer's own player session walks the ladder like the classic
+path: its phase-4 card lands when playback starts, and its own
+phase-5 close (home, after a 30 s linger) drops harmlessly
+against the runner's publish, which landed at first play. An
+escalated turn's acknowledgement is dispatched kind="ack"
+(bridge/studio_sink.py): its player session speaks WITHOUT any
+wall writes, so it can neither take the answer's phases nor send
+the wall home mid-answer. (Before that mark existed, the ack's
+session consumed phase 4 with an empty scene and its linger close
+consumed phase 5 some 30 s later — always before the answer's
+publish could land, escalated turn after escalated turn: every
+closing publish dropped with rc=4 and the composed scene never
+reached the wall. Room evidence 2026-10-31, the 10:41 and 16:04
+turns, read in the Pi's setstate/sayseq logs.)
+
+The result then holds for RESULT_HOLD_S seconds past the end of
+playback and the wall returns home on its own — Javier's rule
+(2026-10-31: he preferred the classic behaviour, a result that
+shows briefly and goes home, over a sticky result that waits to
+be replaced). The return is scheduled by the runner and executed
+by wall_apply's return_home op, which re-checks ownership on the
+Pi at fire time and writes nothing if a newer turn owns the wall
+by then. When playback is never observed (the OFF-hours gate
+suppresses it, a transport failure), nothing is published and
+the record says why. One exception: a turn that spoke an
+acknowledgement but whose answer never launched a player session
+(no sentences, a flush that failed before launch) has NO session
+left to walk the wall home, so the runner schedules the same
+ownership-checked return itself.
 
 The API switch gates everything: with the switch off, the refusal
 is recorded and the runner exits 3 before any network-shaped work —
@@ -326,10 +336,10 @@ def run_live_turn(transcript: str, turn_id: int, *,
                 wall_publish = {"skipped": "playback suppressed (OFF hours)"}
                 break
             if playback == "played" and not published:
-                # First segment is playing: publish NOW. sayseq's
-                # own phase-5 close lands seconds later and would
-                # win the phase, dropping this publish (rc=4) and
-                # leaving the acknowledgement's empty scene up.
+                # First segment is playing: publish NOW, while the
+                # answer session's own phase-5 close is still a
+                # 30 s linger away — the publish takes the phase
+                # and the close then drops harmlessly against it.
                 wall_publish = publish_final_scene(
                     turn_id, title, lines, plan, wall_runner=wall_runner)
                 published = True
@@ -355,6 +365,19 @@ def run_live_turn(transcript: str, turn_id: int, *,
                         wall_runner=wall_runner, scheduler=home_scheduler)
                 break
             time.sleep(0.5)
+    ack_rid = (sink.ack or {}).get("rid") if sink.ack else None
+    if (home_return is None and wall_publish is None and not rid
+            and ack_rid
+            and not (receipt and receipt.get("launch_unknown"))):
+        # The turn spoke an acknowledgement but its answer never
+        # launched a player session (no sentences, or the flush
+        # failed before launch): no session exists to walk the wall
+        # home, so the runner schedules the ownership-checked
+        # return itself (module docstring). A launch-unknown answer
+        # is excluded — a session may exist and own that duty.
+        home_return = schedule_home_return(
+            turn_id, home_delay_s,
+            wall_runner=wall_runner, scheduler=home_scheduler)
     wall = (wall_reader or read_wall_state)()
     last_turn = getattr(source, "last_turn", {}) or {}
 
