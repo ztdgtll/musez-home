@@ -15,6 +15,7 @@ import json
 import unittest
 
 from .meta_source import (MAX_ROUNDS, SHORT_OPENER_GUIDANCE,
+                          SPOKEN_ROUNDS_GUIDANCE,
                           SPARK_MAX_TOKENS, SPARK_REASONING_EFFORT,
                           SYSTEM_PROMPT, WONDER_MAX_TOKENS, MetaAPIError,
                           MetaSource, compose_system_prompt)
@@ -100,6 +101,16 @@ class SystemPromptTests(unittest.TestCase):
         system = transport.requests[0]["messages"][0]
         self.assertEqual(system["role"], "system")
         self.assertIn(SHORT_OPENER_GUIDANCE, system["content"])
+
+    def test_system_prompt_carries_the_spoken_rounds_guidance(self):
+        # The 2026-11-01 rehearsal failure: ack echoed, process
+        # narrated mid-round, double close. The guidance against all
+        # three must ride every request's system prompt.
+        transport = FakeTransport([[content("Listo."), DONE]])
+        source = MetaSource(transport=transport)
+        run(source)
+        system = transport.requests[0]["messages"][0]
+        self.assertIn(SPOKEN_ROUNDS_GUIDANCE, system["content"])
 
 
 class ToolTurnTests(unittest.TestCase):
