@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -97,6 +99,96 @@ SPOKEN_ROUNDS_GUIDANCE = (
     "followed by a summary that restates it."
 )
 
+# A turn's language follows the REQUEST in that turn — never the
+# language the room's standing context happens to be written in.
+# Field evidence (live session 2026-11-01): an English request got
+# a Spanish answer, because the presence block the runner appends
+# is written entirely in Spanish and, as standing context, outweighs
+# a bare request. The guidance below is the standing rule; the
+# per-turn pin (turn_language_directive, inserted by stream_turn
+# from detect_language's deterministic verdict) is what makes the
+# rule land on THIS turn: spoken sentences, the ack, wall titles
+# and lines, plan labels and card content all follow it. Spanish
+# stays the room's default — detection is conservative on purpose,
+# and a Spanish turn changes nothing anywhere downstream.
+TURN_LANGUAGE_GUIDANCE = (
+    "The language of each turn follows the user's request in that "
+    "turn, whatever language any standing context, memory or "
+    "presence text is written in: if the request is in English, "
+    "the ENTIRE turn is in English — spoken replies, the "
+    "acknowledgement, wall titles and lines, plan labels and card "
+    "content; if it is in Spanish, everything is in Spanish."
+)
+
+# Function-word evidence for detect_language. Deliberately free of
+# words both languages share (a, no…) and of content words: only
+# short, frequent function/discourse words vote, so a borrowed
+# noun can never flip a turn.
+_EN_FUNCTION_WORDS = frozenset("""
+    the be is are was were will would can could should shall may might
+    what whats how when where who why it its this that these those
+    my your his her our their me you we they he she him them us
+    and or but if then than on in at to for with without about
+    do does did not dont im youre lets
+    put please thank thanks hey hello off up down out over under
+    want need like just now today tomorrow
+""".split())
+_ES_FUNCTION_WORDS = frozenset("""
+    el la los las un una unos unas de del en y o pero si cuando donde
+    como que cual cuales quien es son esta estan estaba va van hay
+    hace para por con sin sobre mi mis tu tus su sus me te se nos
+    lo le les este esta estos estas ese esa eso esto muy mas ya
+    hoy manana pon pone
+""".split())
+
+
+def detect_language(text) -> str:
+    """The turn's language: "en" or "es", decided deterministically
+    from the transcript's function words — never by the model.
+
+    Conservative by design (the room's default is Spanish): English
+    must WIN, not merely appear — at least two English function
+    words and strictly more than the Spanish count. Inverted marks
+    (¿ ¡), ñ and accented vowels are strong Spanish evidence and
+    each outvotes an English word. Short or ambiguous turns, empty
+    text and non-text input all land on Spanish, so a Spanish turn
+    is never reclassified and its downstream dispatches stay
+    byte-identical to before this rule existed."""
+    if not isinstance(text, str) or not text.strip():
+        return "es"
+    es_score = 0
+    # Strong orthographic evidence, read off the RAW text before
+    # normalization strips it: these marks exist only in Spanish.
+    es_score += 3 * sum(text.count(c) for c in "¿¡ñ")
+    es_score += sum(1 for c in text if c in "áéíóúÁÉÍÓÚ")
+    folded = unicodedata.normalize("NFKD", text.lower())
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    en_score = 0
+    for token in re.findall(r"[a-z]+", folded):
+        if token in _EN_FUNCTION_WORDS:
+            en_score += 1
+        elif token in _ES_FUNCTION_WORDS:
+            es_score += 1
+    if en_score >= 2 and en_score > es_score:
+        return "en"
+    return "es"
+
+
+def turn_language_directive(lang: str) -> str:
+    """The per-turn system pin stream_turn inserts ahead of the
+    user's message: the detected language, stated as a rule for
+    every surface the turn produces (see TURN_LANGUAGE_GUIDANCE)."""
+    name = "English" if lang == "en" else "Spanish"
+    return (
+        f"Turn language: {name}. The user's request in this turn "
+        f"is in {name}: the ENTIRE turn is in {name} — every "
+        "spoken sentence, the acknowledgement, wall titles and "
+        "lines, plan labels and card content — regardless of the "
+        "language of any standing context, memory or presence "
+        "text, and regardless of earlier turns."
+    )
+
+
 SYSTEM_PROMPT = (
     "You are MuseZ, the voice of a smart room. You answer out loud, so "
     "keep every spoken reply to one or two short, plain sentences: no "
@@ -112,7 +204,8 @@ SYSTEM_PROMPT = (
     "tu sábado.'). Use clean_studio to start the robot vacuum "
     "cleaning the studio. "
     + SHORT_OPENER_GUIDANCE + " "
-    + SPOKEN_ROUNDS_GUIDANCE
+    + SPOKEN_ROUNDS_GUIDANCE + " "
+    + TURN_LANGUAGE_GUIDANCE
 )
 
 def compose_system_prompt(presence: str | None = None) -> str:
@@ -171,25 +264,32 @@ ESCALATE_SCHEMA = {
 # text is never hard-coded in the bridge. A missing or malformed ack
 # degrades to the one fixed generic line, never to silence.
 ACK_FALLBACK = "Dame un momento."
+# The fallback speaks the turn's language like everything else in
+# the turn (see TURN_LANGUAGE_GUIDANCE): an English turn whose
+# Spark passed no usable ack hears this, never the Spanish line.
+ACK_FALLBACK_EN = "One moment."
 ACK_MAX_CHARS = 60
 
 
-def validate_ack(text) -> str:
-    """Spark's ack when it is one short sentence, else ACK_FALLBACK.
+def validate_ack(text, lang: str = "es") -> str:
+    """Spark's ack when it is one short sentence, else the fallback.
 
     Whitespace is collapsed first (an ack is one spoken line), then
     the line must be non-empty, within the character cap, and a
     single sentence: at most one sentence-ending mark, at the end.
+    The fallback is ACK_FALLBACK, or ACK_FALLBACK_EN on an English
+    turn (`lang` is detect_language's verdict for the turn).
     """
+    fallback = ACK_FALLBACK_EN if lang == "en" else ACK_FALLBACK
     if not isinstance(text, str):
-        return ACK_FALLBACK
+        return fallback
     text = " ".join(text.split())
     if not text or len(text) > ACK_MAX_CHARS:
-        return ACK_FALLBACK
+        return fallback
     endings = sum(text.count(c) for c in ".!?…")
     if endings > 1 or (endings == 1
                        and not text.endswith((".", "!", "?", "…"))):
-        return ACK_FALLBACK
+        return fallback
     return text
 
 
@@ -336,8 +436,19 @@ class MetaSource:
         tools = room_tools if room_tools is not None else TOOL_SCHEMAS
         model = self.fast_model
         escalated = False
+        # The turn's language is decided HERE, deterministically,
+        # and pinned as its own system message directly under the
+        # standing prompt: the presence block rides inside that
+        # prompt (Spanish, by design) and outweighs a bare request
+        # without this pin — an English request was answered in
+        # Spanish in the live room (2026-11-01). The same verdict
+        # drives the voice's synthesis language (bridge/studio_sink
+        # via bridge/live_turn).
+        turn_lang = detect_language(user_text)
         messages = [
             {"role": "system", "content": self.system_prompt},
+            {"role": "system",
+             "content": turn_language_directive(turn_lang)},
             {"role": "user", "content": user_text},
         ]
         rounds = 0
@@ -434,7 +545,7 @@ class MetaSource:
                 except ValueError:
                     esc_args = {}
                 reason = esc_args.get("reason", "")
-                ack = validate_ack(esc_args.get("ack"))
+                ack = validate_ack(esc_args.get("ack"), lang=turn_lang)
                 messages.append({
                     "role": "tool", "tool_call_id": escalation["tool_id"],
                     "content": json.dumps(
@@ -509,6 +620,7 @@ class MetaSource:
         self.last_turn = {
             "model_final": model,
             "escalated": escalated,
+            "turn_lang": turn_lang,
             "rounds": rounds,
             "round_marks": round_marks,
             "prompt_tokens": _token_total("prompt_tokens"),

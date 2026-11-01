@@ -238,25 +238,30 @@ def _truncate(text: str, limit: int = PLAN_LABEL_MAX) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def plan_card(plan: dict):
+def plan_card(plan: dict, lang: str = "es"):
     """The card summary (title, up to two lines) of a day plan.
 
     What the existing card path shows for a plan turn while the wall
     page cannot render the plan kind yet: the activity's span and
     the rain band, composed from the same payload the flush ships —
-    never a different claim than the infographic makes."""
+    never a different claim than the infographic makes. The two
+    bridge-composed words (the rain label, the no-rain line) follow
+    the turn's language (`lang`, meta_source.detect_language); the
+    plan's own labels and title are the model's, pinned upstream."""
     blocks = plan.get("blocks") or []
     lines: list[str] = []
     activity = next((b for b in blocks if b.get("kind") == "activity"), None)
     rain = next((b for b in blocks if b.get("kind") == "rain"), None)
+    rain_word, no_rain = (("Rain", "No rain") if lang == "en"
+                          else ("Lluvia", "Sin lluvia"))
     if activity is not None:
         lines.append(_truncate(
             f"{activity['label']} · {activity['start']}–{activity['end']}"))
     if rain is not None:
         lines.append(_truncate(
-            f"Lluvia · {rain['start']}–{rain['end']}"))
+            f"{rain_word} · {rain['start']}–{rain['end']}"))
     elif activity is not None:
-        lines.append("Sin lluvia")
+        lines.append(no_rain)
     if not lines and blocks:
         first = blocks[0]
         lines.append(_truncate(

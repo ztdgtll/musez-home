@@ -112,6 +112,30 @@ def condition_es(weathercode) -> str:
     return WMO_CONDITIONS_ES.get(weathercode, "sin datos")
 
 
+# The same vocabulary in English: card composition follows the
+# turn's language like every other surface (see
+# meta_source.TURN_LANGUAGE_GUIDANCE). The tool result the model
+# reads keeps the Spanish `condition` — the model words its own
+# reply under the turn-language pin; only bridge-composed card
+# text (studio_turn.compose_scene) switches with the turn.
+WMO_CONDITIONS_EN = {
+    0: "clear", 1: "mostly clear", 2: "partly cloudy",
+    3: "overcast", 45: "fog", 48: "fog", 51: "light drizzle",
+    53: "drizzle", 55: "dense drizzle", 56: "freezing drizzle",
+    57: "freezing drizzle", 61: "light rain", 63: "rain",
+    65: "heavy rain", 66: "freezing rain", 67: "freezing rain",
+    71: "snow", 73: "snow", 75: "snow", 77: "snow",
+    80: "light showers", 81: "showers", 82: "heavy showers",
+    85: "snow showers", 86: "snow showers",
+    95: "thunderstorm", 96: "thunderstorm with hail",
+    99: "thunderstorm with hail",
+}
+
+
+def condition_en(weathercode) -> str:
+    return WMO_CONDITIONS_EN.get(weathercode, "no data")
+
+
 def _ssh(argv, stdin_text=None, timeout=60):
     return subprocess.run(
         argv, input=stdin_text, capture_output=True, text=True, timeout=timeout

@@ -53,6 +53,7 @@ from .studio_room import (
     SSH_HOST,
     HourlyWxRunner,
     StudioRoom,
+    condition_en,
     mint_turn,
 )
 from .studio_sink import Respond2Transport, StudioSink, TransportError
@@ -104,7 +105,8 @@ def _truncate(text: str, limit: int = 90) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
+def compose_scene(name: str, room: StudioRoom, sink: StudioSink,
+                  lang: str = "es"):
     """The answer's ONE wall scene, composed at flush time: the
     turn's own scene candidate wins; a weather result composes from
     the real data; otherwise the first spoken sentences themselves
@@ -114,20 +116,31 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
 
     None-safe by construction: any weather field the feed left null
     is simply left out of the line — composing the scene must never
-    crash after the stream and take the spoken answer down with it."""
+    crash after the stream and take the spoken answer down with it.
+
+    The bridge-composed weather card follows the turn's language
+    (`lang`, meta_source.detect_language): on an English turn the
+    condition and the labels are English, so no surface of the
+    turn stays behind in Spanish."""
     if room.wall_scenes:
         last = room.wall_scenes[-1]
         return last["title"], last["lines"]
     if room.weather is not None:
         w = room.weather
-        line1 = f"Tamarac · {w.get('condition') or 'sin datos'}"
+        if lang == "en":
+            condition = condition_en(w.get("weathercode"))
+            labels = ("Max", "Min", "Rain")
+        else:
+            condition = w.get("condition") or "sin datos"
+            labels = ("Máx", "Mín", "Lluvia")
+        line1 = f"Tamarac · {condition}"
         parts = []
         if w.get("temp_max_f") is not None:
-            parts.append(f"Máx {w['temp_max_f']:.0f} °F")
+            parts.append(f"{labels[0]} {w['temp_max_f']:.0f} °F")
         if w.get("temp_min_f") is not None:
-            parts.append(f"Mín {w['temp_min_f']:.0f} °F")
+            parts.append(f"{labels[1]} {w['temp_min_f']:.0f} °F")
         if w.get("precip_prob_max") is not None:
-            parts.append(f"Lluvia {w['precip_prob_max']:.0f}%")
+            parts.append(f"{labels[2]} {w['precip_prob_max']:.0f}%")
         return "Tamarac weather", [line1, " · ".join(parts)]
     if sink.sentences:
         lines = [_truncate(s, SCENE_LINE_MAX) for s in sink.sentences[:2]]
@@ -135,7 +148,8 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink):
     return "", []
 
 
-def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink):
+def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink,
+                        lang: str = "es"):
     """The turn's final scene as (title, lines, scene): a validated
     day plan outranks every card composition — the flush then ships
     the plan payload as the dispatch's structured scene, with a card
@@ -143,12 +157,13 @@ def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink):
     is exactly compose_scene and scene is None. A plan the room
     rejected never got queued, so an invalid plan lands here as its
     absence — the card fallback below is the fallback, and the turn
-    is never lost over a bad payload."""
+    is never lost over a bad payload. Bridge-composed text follows
+    the turn's language (`lang`)."""
     if room.plan_scenes:
         plan = room.plan_scenes[-1]
-        title, lines = plan_card(plan)
+        title, lines = plan_card(plan, lang=lang)
         return title, lines, plan
-    title, lines = compose_scene(name, room, sink)
+    title, lines = compose_scene(name, room, sink, lang=lang)
     return title, lines, None
 
 

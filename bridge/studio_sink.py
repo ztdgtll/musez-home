@@ -84,10 +84,22 @@ class Respond2Transport:
     (room evidence 2026-10-31: an ack session's writes consumed both
     phases before the answer could publish, and every escalated
     turn's closing publish was dropped by the wall guard, rc=4).
+
+    The turn's LANGUAGE rides the same road as the `lang` keyword:
+    respond2.sh synthesizes in Spanish unless RESPOND_LANG says
+    otherwise, so the env travels ONLY on an English turn
+    (lang="en" -> RESPOND_LANG=en) and a dispatch without it is
+    byte-identical to the classic path's — Spanish turns and the
+    classic path itself never see the variable set, and an
+    inherited RESPOND_LANG is stripped exactly like RESPOND_KIND:
+    a turn's language is decided per turn (meta_source.
+    detect_language), never ambient.
     """
 
     # The sink passes `kind` only to transports that declare this.
     supports_kind = True
+    # …and `lang`, under the same rule.
+    supports_lang = True
 
     def __init__(self, script: str = None, runner=None):
         self.script = script or os.environ.get("BRIDGE_RESPOND2_PATH", DEFAULT_RESPOND2)
@@ -99,20 +111,26 @@ class Respond2Transport:
         )
 
     def __call__(self, title: str, lines: list, text: str, turn,
-                 scene: dict = None, kind: str = None) -> dict:
+                 scene: dict = None, kind: str = None,
+                 lang: str = None) -> dict:
         line1 = lines[0] if len(lines) > 0 else ""
         line2 = lines[1] if len(lines) > 1 else ""
         # The bridge's API key is not the room's business: respond2
         # gets the environment minus META_API_KEY. A RESPOND_KIND
         # inherited from our own process environment is stripped the
         # same way — a dispatch's kind is set explicitly per call,
-        # never ambient.
+        # never ambient. RESPOND_LANG follows the same discipline,
+        # and is set only for an English turn (lang="en"): Spanish
+        # is respond2's own default, so nothing travels for it.
         env = {k: v for k, v in os.environ.items()
-               if k not in ("META_API_KEY", "RESPOND_KIND")}
+               if k not in ("META_API_KEY", "RESPOND_KIND",
+                            "RESPOND_LANG")}
         if turn is not None:
             env["RESPOND_TURN"] = str(turn)
         if kind:
             env["RESPOND_KIND"] = kind
+        if lang == "en":
+            env["RESPOND_LANG"] = "en"
         try:
             proc = self._run(
                 [self.script, title, line1, line2, _cap_text(text)], env)
@@ -130,6 +148,8 @@ class Respond2Transport:
         receipt = {"rid": m.group(1), "turn": m.group(2), "pid": int(m.group(3))}
         if scene is not None:
             receipt["scene_kind"] = scene.get("kind")
+        if lang == "en":
+            receipt["lang"] = "en"
         return receipt
 
 
@@ -165,11 +185,19 @@ class StudioSink:
     the turn's answer.
     """
 
-    def __init__(self, transport, turn=None, title: str = "", lines=()):
+    def __init__(self, transport, turn=None, title: str = "", lines=(),
+                 lang: str = "es"):
         self.transport = transport
         self.turn = turn
         self.title = title
         self.lines = list(lines)
+        # The turn's language (meta_source.detect_language, decided
+        # by the runner): "es" — the default — dispatches exactly
+        # as before this parameter existed; "en" asks a lang-aware
+        # transport to synthesize the turn in English (see
+        # Respond2Transport). The ack and the answer share the
+        # sink, so both dispatches carry the turn's language.
+        self.lang = lang
         self.scene: dict | None = None
         self.sentences: list[str] = []
         self.events: list = []  # (perf_counter, kind) — stage marks
@@ -199,12 +227,17 @@ class StudioSink:
         transports that declare `supports_kind`: plain callables —
         test doubles, older transports — keep the original
         four-argument contract and simply never mark a dispatch.
-        Only the room's real transport needs the mark."""
+        Only the room's real transport needs the mark. The turn's
+        language follows the same rule (`supports_lang`, and only
+        on an English turn)."""
+        kwargs: dict = {}
         if kind is not None and getattr(self.transport,
                                         "supports_kind", False):
-            return self.transport(title, lines, text, self.turn,
-                                  kind=kind)
-        return self.transport(title, lines, text, self.turn)
+            kwargs["kind"] = kind
+        if self.lang == "en" and getattr(self.transport,
+                                         "supports_lang", False):
+            kwargs["lang"] = "en"
+        return self.transport(title, lines, text, self.turn, **kwargs)
 
     def announce(self, text: str) -> dict:
         """Dispatch the escalation acknowledgement NOW, on its own.
@@ -239,14 +272,18 @@ class StudioSink:
             self.receipt = {"rid": None, "skipped": "no sentences"}
             return self.receipt
         text = " ".join(self.sentences)
+        extra: dict = {}
+        if self.lang == "en" and getattr(self.transport,
+                                         "supports_lang", False):
+            extra["lang"] = "en"
         try:
             if self.scene is None:
                 self.receipt = self.transport(
-                    self.title, self.lines, text, self.turn)
+                    self.title, self.lines, text, self.turn, **extra)
             else:
                 self.receipt = self.transport(
                     self.title, self.lines, text, self.turn,
-                    scene=self.scene)
+                    scene=self.scene, **extra)
         except LaunchUnknownError:
             # Terminal receipt: the response may be playing, so a
             # later flush() returns this instead of dispatching again.

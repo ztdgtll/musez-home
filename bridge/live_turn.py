@@ -83,7 +83,8 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, "/opt/muse/skills/custom-connector-setup/bin")
 
 from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
-from .meta_source import MetaAPIError, MetaSource, compose_system_prompt
+from .meta_source import (MetaAPIError, MetaSource, compose_system_prompt,
+                          detect_language)
 from .studio_room import (
     SSH_CONFIG,
     SSH_HOST,
@@ -233,6 +234,12 @@ def run_live_turn(transcript: str, turn_id: int, *,
     sayseq log reader and the presence reader."""
     read_seq = sayseq_reader or (lambda: _ssh_cat(SAYSEQ_LOG_CMD))
 
+    # The turn's language, decided deterministically from the
+    # transcript (meta_source.detect_language): it pins the model's
+    # whole turn (in MetaSource), voices the sink's dispatches in
+    # that language, and localizes the bridge-composed card text.
+    turn_lang = detect_language(transcript)
+
     # The API switch, before ANY network-shaped work — the same
     # refusal contract as the mock runner, with the caller's turn id.
     mode = brain_mode()
@@ -241,6 +248,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
             "mode": "switch_off", "source": "brain_switch",
             "brain_mode": mode, "ts": time.time(),
             "transcript": transcript, "turn_id": turn_id,
+            "turn_lang": turn_lang,
             "rid": None, "playback": "skipped", "turn_error": None,
             "tool_calls": [], "ack": None, "sentences": [],
             "presence_loaded": False, "wall_publish": None,
@@ -259,7 +267,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
             system_prompt=compose_system_prompt(presence))
     if sink is None:
         sink = StudioSink(Respond2Transport(runner=respond_runner),
-                          turn=turn_id)
+                          turn=turn_id, lang=turn_lang)
     if room is None:
         room = StudioRoom(turn_id, speak=sink.say,
                           hourly_runner=HourlyWxRunner())
@@ -279,7 +287,8 @@ def run_live_turn(transcript: str, turn_id: int, *,
             marks = {"tool_calls": [], "t_full": deadline_s * 1000.0}
     except Exception as e:
         turn_error = f"{type(e).__name__}: {e}"
-    title, lines, plan = compose_final_scene("", room, sink)
+    title, lines, plan = compose_final_scene("", room, sink,
+                                             lang=turn_lang)
     sink.set_scene(title, lines, scene=plan)
     if plan is not None:
         wall_outcome = "plan"
@@ -393,6 +402,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
         "ts": time.time(),
         "transcript": transcript,
         "turn_id": turn_id,
+        "turn_lang": turn_lang,
         "rid": rid,
         "playback": playback,
         "turn_error": turn_error,
