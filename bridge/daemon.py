@@ -29,9 +29,19 @@ the loop; a lost ssh connection just delays the drain, and
 entries are only marked done after they were processed, so a
 restart resumes mid-queue instead of losing turns.
 
-State (how many queue lines are done, plus a heartbeat) persists
-in ~/.musez-bridge/state.json — liveness is a file read, not a
-guess. A lock file keeps a second daemon instance from starting.
+State persists in ~/.musez-bridge/state.json: a heartbeat plus
+the cursor — the set of turn ids already processed. The cursor is
+keyed on ids, never on line position: a queue that shrank or was
+rewritten used to re-sync by count and could swallow the turn
+that arrived in the same second (room evidence 2026-11-01: the
+listener restarted, two entries landed glued on one physical
+line, the valid count dropped 8 -> 7 and the re-sync ate a LIVE
+turn). With ids, a smaller queue is a non-event: an entry runs
+iff its id was never processed. A legacy count-only state is
+upgraded once, seeded from the count's own claim unioned with
+the turn ids the results file proves were processed. Liveness
+is a file read, not a guess. A lock file keeps a second daemon
+instance from starting.
 """
 
 from __future__ import annotations
@@ -53,6 +63,10 @@ STATE_PATH = STATE_DIR / "state.json"
 LOCK_PATH = STATE_DIR / "daemon.lock"
 POLL_S = 0.7
 STALE_AFTER_S = 90.0
+# The processed-id cursor is bounded: the queue is append-only in
+# practice, so 500 ids reach far beyond any realistic rewrite, and
+# pruning never drops an id still present in the queue read.
+MAX_DONE_IDS = 500
 
 
 def log(msg: str) -> None:
@@ -63,9 +77,9 @@ def _ssh_text(command: str) -> str:
     """One fixed ssh command's stdout; RAISES on a failed fetch.
 
     The distinction matters: an unreachable Pi must never look like
-    an empty queue — the drain keys progress on the entry count, and
-    mistaking a transport failure for a shrunken file would replay
-    turns the room already answered."""
+    an empty queue — a silently-empty read would hide fresh turns
+    behind a healthy-looking poll and stall the drain until the
+    next success, with nothing in the log to say why."""
     proc = subprocess.run(["ssh", "-F", SSH_CONFIG, SSH_HOST, command],
                           capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
@@ -75,29 +89,57 @@ def _ssh_text(command: str) -> str:
     return proc.stdout or ""
 
 
+def _line_objects(line: str) -> list:
+    """JSON values on one queue line: normally exactly one.
+
+    An append that lands before the previous line's newline glues
+    two entries onto ONE physical line (room evidence 2026-11-01:
+    a synthetic entry and the next LIVE turn shared a line; the
+    plain per-line parse made both invisible, the valid count
+    dropped 8 -> 7 and the count cursor's re-sync ate the live
+    turn). Recover by decoding consecutive objects; a partial tail
+    (the queue is polled mid-append) yields only what is complete,
+    and a line with no complete object yields nothing."""
+    try:
+        return [json.loads(line)]
+    except ValueError:
+        pass
+    out = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(line):
+        while idx < len(line) and line[idx] in " \t,":
+            idx += 1
+        if idx >= len(line):
+            break
+        try:
+            obj, end = decoder.raw_decode(line, idx)
+        except ValueError:
+            break
+        out.append(obj)
+        idx = end
+    return out
+
+
 def parse_entries(text: str) -> list:
     """Valid queue entries from the queue file's text, in order.
 
-    A line counts only as a complete JSON object with an int turn
-    and a non-empty text; anything else (a line mid-append, damage)
-    is skipped here and left behind in the count the caller keeps —
-    the drain is keyed on VALID entries, so a bad line can neither
-    wedge the queue nor be mistaken for a turn."""
+    An entry counts only as a complete JSON object with an int
+    turn and a non-empty text; anything else (a line mid-append,
+    damage) is skipped. The drain is keyed on turn ids, so a bad
+    line can neither wedge the queue nor be mistaken for a turn."""
     out = []
     for line in (text or "").splitlines():
         line = line.strip()
         if not line:
             continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        if (isinstance(entry, dict)
-                and isinstance(entry.get("turn"), int)
-                and not isinstance(entry.get("turn"), bool)
-                and isinstance(entry.get("text"), str)
-                and entry["text"].strip()):
-            out.append(entry)
+        for entry in _line_objects(line):
+            if (isinstance(entry, dict)
+                    and isinstance(entry.get("turn"), int)
+                    and not isinstance(entry.get("turn"), bool)
+                    and isinstance(entry.get("text"), str)
+                    and entry["text"].strip()):
+                out.append(entry)
     return out
 
 
@@ -205,6 +247,74 @@ def process_entry(entry: dict, mode_reader=None, now: float = None) -> None:
             f"{type(e).__name__}: {e}")
 
 
+def _recorded_turn_ids(path=None) -> set:
+    """Turn ids already present in the results file — the ground
+    truth of what the bridge has processed (every path through
+    process_entry writes a record). Used once, to seed a legacy
+    count-only state file."""
+    ids = set()
+    try:
+        with open(path or RESULTS_DEFAULT) as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    tid = record.get("turn_id")
+                    if (isinstance(tid, int)
+                            and not isinstance(tid, bool)):
+                        ids.add(tid)
+    except OSError:
+        pass
+    return ids
+
+
+def _seed_done_ids(state: dict, entries: list) -> list:
+    """The processed-id cursor for a legacy count-only state.
+
+    Seeds from BOTH witnesses of the old cursor: the first `done`
+    entries of the queue as read today (what the count claimed)
+    unioned with every turn id the results file carries (what was
+    actually processed). After a queue rewrite the two can
+    disagree; an id either witness names must never run again."""
+    count = int(state.get("done") or 0)
+    ids = _recorded_turn_ids()
+    for entry in entries[:count]:
+        ids.add(entry["turn"])
+    in_queue = [e["turn"] for e in entries if e["turn"] in ids]
+    rest = sorted(ids.difference(in_queue))
+    return in_queue + rest
+
+
+def _prune_done_ids(done_ids: list, present_ids: set) -> list:
+    """Bound the cursor at MAX_DONE_IDS without ever dropping an
+    id still present in the queue (a dropped present id would be
+    re-seen — and re-recorded as stale — on every poll)."""
+    if len(done_ids) <= MAX_DONE_IDS:
+        return done_ids
+    present = [t for t in done_ids if t in present_ids]
+    others = [t for t in done_ids if t not in present_ids]
+    keep = MAX_DONE_IDS - len(present)
+    keep_set = set(present) | (set(others[-keep:]) if keep > 0 else set())
+    return [t for t in done_ids if t in keep_set]
+
+
+def _pending_entries(entries: list, done_set: set) -> list:
+    """Queue entries whose turn id was never processed, in file
+    order. Keyed on ids, not position: a queue that shrinks,
+    rotates or is rewritten changes nothing — an entry is pending
+    iff its id is unknown to the cursor."""
+    return [e for e in entries if e["turn"] not in done_set]
+
+
+def _save_cursor(done_ids: list) -> None:
+    # `done` (the count) rides along for anything still reading
+    # the state file the old way; the cursor is `done_ids`.
+    _save_state({"done": len(done_ids), "done_ids": done_ids,
+                 "ts": time.time()})
+
+
 def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     lockf = open(LOCK_PATH, "a+")
@@ -214,28 +324,38 @@ def main() -> int:
         log("another daemon holds the lock; exiting")
         return 1
     state = _load_state()
-    done = int(state.get("done") or 0)
-    log(f"up; {done} queue entries already processed")
+    stored = state.get("done_ids")
+    needs_seed = not isinstance(stored, list)
+    done_ids = ([t for t in stored
+                 if isinstance(t, int) and not isinstance(t, bool)]
+                if isinstance(stored, list) else [])
+    done_set = set(done_ids)
+    log(f"up; {len(done_set)} queue entries already processed")
     while True:
         try:
             entries = read_queue_entries()
-            if len(entries) < done:
-                # The queue file shrank (rotation/repair): resync
-                # instead of waiting forever for lines that exist.
-                log(f"queue shrank ({len(entries)} < {done}); resyncing")
-                done = len(entries)
-            while done < len(entries):
-                entry = entries[done]
+            if needs_seed:
+                # One-time upgrade of a legacy count-only state.
+                done_ids = _seed_done_ids(state, entries)
+                done_set = set(done_ids)
+                needs_seed = False
+                log(f"cursor upgraded to turn ids; {len(done_set)} "
+                    f"adopted as processed")
+            done_ids = _prune_done_ids(
+                done_ids, {e["turn"] for e in entries})
+            done_set = set(done_ids)
+            for entry in _pending_entries(entries, done_set):
                 log(f"turn {entry['turn']}: {entry['text']!r}")
                 process_entry(entry)
-                done += 1
-                _save_state({"done": done, "ts": time.time()})
+                done_set.add(entry["turn"])
+                done_ids.append(entry["turn"])
+                _save_cursor(done_ids)
         except Exception as e:
             log(f"poll failed: {type(e).__name__}: {e}")
         finally:
             # The heartbeat ticks even when the Pi is unreachable:
             # liveness must be provable exactly when the link is not.
-            _save_state({"done": done, "ts": time.time()})
+            _save_cursor(done_ids)
         time.sleep(POLL_S)
 
 

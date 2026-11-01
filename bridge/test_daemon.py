@@ -6,7 +6,11 @@ switch gate drains an entry as a recorded refusal when the Pi says
 non-bridge — without ever calling the live runner — an entry older
 than the staleness bound drains as a recorded skip without ever
 reaching the gate or the runner, and a bridge entry reaches the
-runner with the listener's own turn id.
+runner with the listener's own turn id. The cursor is keyed on
+turn ids: two entries glued onto one physical line are both
+recovered, a shrunken queue can no longer swallow an unseen turn,
+and a legacy count-only state seeds from the count's claim unioned
+with the recorded turn ids.
 
 Run from the repo root:  python3 -m unittest bridge.test_daemon -v
 """
@@ -177,6 +181,91 @@ class ProcessEntryTests(unittest.TestCase):
                              mode_reader=lambda: '{"mode": "bridge"}',
                              now=9_999_999.0)
         self.assertEqual(self.ran, [("sin ts", 222)])
+
+
+class GluedLineTests(unittest.TestCase):
+    """2026-11-01: an append that landed before the previous
+    line's newline glued two entries onto one physical line and
+    the per-line parse made BOTH invisible."""
+
+    def test_two_entries_on_one_line_are_both_recovered(self):
+        text = GOOD_1 + GOOD_2 + "\n"
+        entries = daemon.parse_entries(text)
+        self.assertEqual([e["turn"] for e in entries], [111, 222])
+
+    def test_glued_line_with_partial_tail_keeps_the_complete_one(self):
+        text = GOOD_1 + '{"turn": 333, "text": "a mitad de escr'
+        entries = daemon.parse_entries(text)
+        self.assertEqual([e["turn"] for e in entries], [111])
+
+    def test_glued_line_among_normal_lines(self):
+        text = "\n".join([GOOD_2, GOOD_1 + GOOD_2]) + "\n"
+        entries = daemon.parse_entries(text)
+        self.assertEqual([e["turn"] for e in entries], [222, 111, 222])
+
+
+class IdCursorTests(unittest.TestCase):
+    def entries(self, *turns):
+        return [{"turn": t, "text": f"t{t}", "ts": None} for t in turns]
+
+    def test_pending_is_by_id_not_position(self):
+        pending = daemon._pending_entries(
+            self.entries(111, 222, 333), {111, 333})
+        self.assertEqual([e["turn"] for e in pending], [222])
+
+    def test_shrunken_queue_pending_is_only_the_unseen(self):
+        # The 2026-11-01 loss, inverted: the old cursor re-synced
+        # its count to the shrunken queue and adopted the unseen
+        # turn. By id, whatever was never processed stays pending.
+        pending = daemon._pending_entries(
+            self.entries(222, 333), {111, 222})
+        self.assertEqual([e["turn"] for e in pending], [333])
+
+    def test_rewritten_queue_with_same_ids_has_nothing_pending(self):
+        pending = daemon._pending_entries(
+            self.entries(333, 111), {111, 222, 333})
+        self.assertEqual(pending, [])
+
+    def test_seed_unions_count_claim_and_recorded_ids(self):
+        entries = self.entries(111, 222, 333)
+        with tempfile.TemporaryDirectory() as td:
+            results = Path(td) / "results.jsonl"
+            results.write_text(
+                json.dumps({"turn_id": 999}) + "\n"
+                + "not json\n"
+                + json.dumps({"turn_id": 222}) + "\n")
+            with mock.patch.object(daemon, "RESULTS_DEFAULT", results):
+                seeded = daemon._seed_done_ids({"done": 1}, entries)
+        # Count claims the first entry (111); the records prove
+        # 222 and the since-rotated 999. All three are adopted.
+        self.assertEqual(set(seeded), {111, 222, 999})
+        self.assertEqual(seeded[:2], [111, 222])
+
+    def test_recorded_turn_ids_skips_damage(self):
+        with tempfile.TemporaryDirectory() as td:
+            results = Path(td) / "results.jsonl"
+            results.write_text(
+                json.dumps({"turn_id": 111}) + "\n"
+                + json.dumps({"turn_id": "x"}) + "\n"
+                + json.dumps({"mode": "live"}) + "\n")
+            self.assertEqual(
+                daemon._recorded_turn_ids(results), {111})
+
+    def test_recorded_turn_ids_missing_file_is_empty(self):
+        self.assertEqual(
+            daemon._recorded_turn_ids("/nonexistent/results.jsonl"),
+            set())
+
+    def test_prune_never_drops_a_present_id(self):
+        done = list(range(600))
+        pruned = daemon._prune_done_ids(done, {0, 1, 2})
+        self.assertLessEqual(len(pruned), daemon.MAX_DONE_IDS)
+        self.assertTrue({0, 1, 2} <= set(pruned))
+        self.assertEqual(pruned[:3], [0, 1, 2])
+
+    def test_prune_under_cap_is_identity(self):
+        self.assertEqual(
+            daemon._prune_done_ids([1, 2, 3], {1}), [1, 2, 3])
 
 
 if __name__ == "__main__":
