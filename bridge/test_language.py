@@ -175,6 +175,15 @@ class AckLanguageTests(unittest.TestCase):
             [tool_delta(0, call_id="e1", name="escalate",
                         arguments=json.dumps(args)),
              sse({}, finish="tool_calls"), DONE],
+            # DEMO_LINE_2 is a plan request: Wonder builds the plan
+            # before answering, as the plan guard requires.
+            [tool_delta(0, call_id="p1", name="set_day_plan",
+                        arguments='{"title": "Saturday plan", '
+                                  '"blocks": [{"start": "09:00", '
+                                  '"end": "10:30", "label": '
+                                  '"Breakfast at home", "kind": '
+                                  '"activity"}]}'),
+             sse({}, finish="tool_calls"), DONE],
             [content("Your Saturday is planned."), DONE],
         ])
         sink = PrintSink()

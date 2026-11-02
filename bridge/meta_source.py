@@ -222,6 +222,64 @@ def resolve_turn_lang(text, hint=None) -> str:
     return detect_language(text)
 
 
+# A day-planning request, decided deterministically like the
+# turn's language: planning signal (verb or the noun "plan") AND
+# a day reference, either language. Deliberately narrow — a
+# weather question ABOUT a day ("¿qué clima hace el sábado?") has
+# the day but no planning signal, and a plan question with no day
+# in it is a conversation, not a day to lay out. The verdict arms
+# the plan guard in stream_turn and the runner's backstops in
+# live_turn: a turn that asks for a day plan may not END as
+# anything else (field evidence 2026-11-01, turn 1793587782994:
+# the plan request crossed the deadline mid-plan and the runner
+# composed its final scene from partial state — a weather card —
+# while the model's prose summary, spoken later, contradicted it).
+_PLAN_SIGNALS = frozenset("""
+    plan plans planning planifica planificas planificar planificame
+    planea planeame planear organiza organizas organizar organizame
+    arma armas armar armame prepara preparas preparar preparame
+    schedule schedules scheduling organize organizes organizing
+    organise arrange arranging
+""".split())
+_PLAN_DAY_REFS = frozenset("""
+    saturday sunday monday tuesday wednesday thursday friday
+    weekend today tomorrow day week
+    sabado domingo lunes martes miercoles jueves viernes
+    finde hoy manana dia semana
+""".split())
+
+
+def detect_plan_request(text) -> bool:
+    """True when the transcript asks for a day to be PLANNED —
+    a planning signal plus a day reference, in English or Spanish.
+
+    Same folding as detect_language (accents stripped, so
+    "planificá"/"sábado" vote as planifica/sabado). Non-text and
+    empty input are False: an ordinary turn — weather, chat, the
+    field — never trips the guard, and its path stays exactly as
+    before this rule existed."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    folded = unicodedata.normalize("NFKD", text.lower())
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    tokens = set(re.findall(r"[a-z]+", folded))
+    return bool(tokens & _PLAN_SIGNALS) and bool(tokens & _PLAN_DAY_REFS)
+
+
+# The correction the plan guard appends when a model tries to end
+# a plan turn on prose. It names the debt exactly: the plan TOOL
+# is the plan — a narrated summary is not one, however good it
+# sounds — and it offers the two honest ways to pay it.
+PLAN_GUARD_GUIDANCE = (
+    "This turn asks for a day to be planned, but no day plan has "
+    "been built yet — a spoken summary is not a plan, and the "
+    "turn must not end on one. Call set_day_plan now to build "
+    "the plan (call get_weather first if you need the forecast), "
+    "or hand the turn to the deeper model with escalate if it "
+    "needs deeper reasoning. Then answer briefly."
+)
+
+
 def turn_language_directive(lang: str) -> str:
     """The per-turn system pin stream_turn inserts ahead of the
     user's message: the detected language, stated as a rule for
@@ -499,6 +557,14 @@ class MetaSource:
         # language (the listener's STT switch, via the queue entry)
         # passes it as `lang` and it wins — see resolve_turn_lang.
         turn_lang = resolve_turn_lang(user_text, lang)
+        # The plan verdict is deterministic too (detect_plan_request):
+        # a turn that asks for a day plan may not END on anything
+        # else. `plan_built` flips only when a set_day_plan call is
+        # actually dispatched AND its result says ok — a rejected
+        # plan does not discharge the debt, and a call deferred by
+        # an escalation was never dispatched at all.
+        plan_requested = detect_plan_request(user_text)
+        plan_built = False
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "system",
@@ -625,6 +691,24 @@ class MetaSource:
                 yield ("ack", ack)
                 yield ("note", f"escalated to {self.deep_model}: {reason}")
                 continue
+            if not calls and plan_requested and not plan_built \
+                    and rounds < MAX_ROUNDS:
+                # The plan guard: the model is ENDING a plan turn
+                # on prose — a narrated plan with no plan behind
+                # it. Refuse the finish: the buffered draft is
+                # discarded like an escalation's (on a deep-model
+                # round the text already streamed and cannot be
+                # recalled, but the turn still may not END here),
+                # the correction names the debt, and the loop
+                # continues with tools on the table. At the round
+                # cap the finish stands — the runner's deterministic
+                # backstops (live_turn) own the wall from there.
+                messages.append({
+                    "role": "system",
+                    "content": PLAN_GUARD_GUIDANCE,
+                })
+                yield ("note", "plan guard: finish without a plan refused")
+                continue
             # No escalation: release the round's buffered text, in order.
             for event in buffered:
                 yield event
@@ -661,6 +745,9 @@ class MetaSource:
                     }
                 else:
                     result = yield ("tool_call", call["name"], args)
+                if call["name"] == "set_day_plan" \
+                        and isinstance(result, dict) and result.get("ok"):
+                    plan_built = True
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call["tool_id"],
@@ -675,6 +762,8 @@ class MetaSource:
             "model_final": model,
             "escalated": escalated,
             "turn_lang": turn_lang,
+            "plan_requested": plan_requested,
+            "plan_built": plan_built,
             "rounds": rounds,
             "round_marks": round_marks,
             "prompt_tokens": _token_total("prompt_tokens"),

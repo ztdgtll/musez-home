@@ -14,11 +14,13 @@ import copy
 import json
 import unittest
 
-from .meta_source import (MAX_ROUNDS, SHORT_OPENER_GUIDANCE,
+from .meta_source import (MAX_ROUNDS, PLAN_GUARD_GUIDANCE,
+                          SHORT_OPENER_GUIDANCE,
                           SPOKEN_ROUNDS_GUIDANCE,
                           SPARK_MAX_TOKENS, SPARK_REASONING_EFFORT,
                           SYSTEM_PROMPT, WONDER_MAX_TOKENS, MetaAPIError,
-                          MetaSource, compose_system_prompt)
+                          MetaSource, compose_system_prompt,
+                          detect_plan_request)
 from .tools import TOOL_SCHEMAS, DryRoom
 from .turn import PrintSink, run_turn
 
@@ -139,6 +141,20 @@ class ToolTurnTests(unittest.TestCase):
                          "WEATHER")
 
 
+PLAN_ARGS = ('{"title": "Saturday plan", "blocks": '
+             '[{"start": "08:00", "end": "12:00", "label": "Salida", '
+             '"kind": "activity"}]}')
+
+
+def plan_tool_round(call_id="p1"):
+    return [
+        tool_delta(0, call_id=call_id, name="set_day_plan",
+                   arguments=PLAN_ARGS),
+        sse({}, finish="tool_calls"),
+        DONE,
+    ]
+
+
 class EscalationTests(unittest.TestCase):
     def test_escalate_hands_the_turn_to_wonder(self):
         transport = FakeTransport([
@@ -148,17 +164,24 @@ class EscalationTests(unittest.TestCase):
                 sse({}, finish="tool_calls"),
                 DONE,
             ],
+            # A plan request: Wonder builds the plan with the tool
+            # before answering (the plan guard refuses a prose-only
+            # finish — PlanGuardTests pin that refusal itself).
+            plan_tool_round(),
             [content("Armé tu sábado: moto a la mañana, vuelta antes de "
                       "la lluvia."), DONE],
         ])
         source = MetaSource(transport=transport)
         marks, room, sink = run(source, "planificá mi sábado")
-        self.assertEqual(room.actions, [])  # escalate never reaches the room
+        # escalate never reaches the room; the plan tool does.
+        self.assertEqual([a.get("plan") for a in room.actions],
+                         ["Saturday plan"])
         second = transport.requests[1]
         self.assertEqual(second["model"], "muse-wonder-1.0")
         offered = {t["function"]["name"] for t in second["tools"]}
         self.assertNotIn("escalate", offered)
         self.assertTrue(source.last_turn["escalated"])
+        self.assertTrue(source.last_turn["plan_built"])
         self.assertTrue(any("escalated" in n for n in marks["notes"]))
         self.assertEqual(len(sink.sentences), 1)
 
@@ -176,13 +199,17 @@ class MixedEscalationTests(unittest.TestCase):
                 sse({}, finish="tool_calls"),
                 DONE,
             ],
+            plan_tool_round(),
             [content("Acá está tu plan del sábado."), DONE],
         ])
         source = MetaSource(transport=transport)
         marks, room, sink = run(source, "planificá mi sábado")
         # Escalation won: Spark's room call never ran, and Spark's
         # drafted text was discarded — the sink hears only Wonder.
-        self.assertEqual(room.actions, [])
+        # (Wonder's own rounds here obey the plan contract: build
+        # the plan, then answer.)
+        self.assertEqual([a.get("plan") for a in room.actions],
+                         ["Saturday plan"])
         self.assertTrue(source.last_turn["escalated"])
         self.assertEqual(sink.sentences, ["Acá está tu plan del sábado."])
         # The follow-up request's history pairs up: the assistant
@@ -366,8 +393,15 @@ class UsageAndParamsTests(unittest.TestCase):
                 DONE,
             ],
             [
-                content("Armé tu sábado completo."),
+                tool_delta(0, call_id="p1", name="set_day_plan",
+                           arguments=PLAN_ARGS),
+                sse({}, finish="tool_calls"),
                 usage_line(900, 210),
+                DONE,
+            ],
+            [
+                content("Armé tu sábado completo."),
+                usage_line(950, 40),
                 DONE,
             ],
         ])
@@ -379,9 +413,194 @@ class UsageAndParamsTests(unittest.TestCase):
         # no minimal-reasoning squeeze on the model bought for depth.
         self.assertEqual(wonder_body["max_tokens"], WONDER_MAX_TOKENS)
         self.assertNotIn("reasoning_effort", wonder_body)
+        # EVERY deep-model round is shaped by the deep model's own
+        # parameters, wherever it runs in the turn.
+        for body in transport.requests[1:]:
+            self.assertEqual(body["model"], "muse-wonder-1.0")
+            self.assertEqual(body["max_tokens"], WONDER_MAX_TOKENS)
+            self.assertNotIn("reasoning_effort", body)
         models = [m["model"] for m in source.last_turn["round_marks"]]
-        self.assertEqual(models, ["muse-spark-1.3", "muse-wonder-1.0"])
-        self.assertEqual(source.last_turn["completion_tokens"], 219)
+        self.assertEqual(models, ["muse-spark-1.3", "muse-wonder-1.0",
+                                  "muse-wonder-1.0"])
+        self.assertEqual(source.last_turn["completion_tokens"], 259)
+
+
+class PlanDetectorTests(unittest.TestCase):
+    """detect_plan_request: planning signal + day reference,
+    either language — and nothing else. The variants that used
+    to fall through to a weather answer are the true cases; the
+    pure-weather and field turns are the false ones."""
+
+    def test_plan_requests_detected(self):
+        for text in (
+            # The exact transcript of the failed live turn.
+            "Plan my Saturday and get me home before the rain.",
+            "planificame el sábado",
+            "Planificá mi sábado.",
+            "¿Me armás un plan para mañana?",
+            "Organize my Sunday around the rain.",
+            "armame un plan para el finde",
+            "Schedule my Friday around the weather.",
+            "quiero planificar el domingo",
+        ):
+            self.assertTrue(detect_plan_request(text), text)
+
+    def test_non_plan_turns_not_detected(self):
+        for text in (
+            "What's the weather like this weekend?",
+            "Put the weekend weather on the wall.",
+            "¿Qué clima hace el sábado?",
+            "¿Cómo va a estar el clima para este fin de semana?",
+            "Hey Muse, how many projects are competing in this "
+            "hackathon right now?",
+            "limpiá el estudio",
+            "contame un chiste",
+            "hola",
+            "",
+            "   ",
+            None,
+            42,
+        ):
+            self.assertFalse(detect_plan_request(text), repr(text))
+
+
+class ScriptedRoom:
+    """A room whose set_day_plan answers from a scripted result
+    list — the dispatch contract (tools.dispatch) and nothing
+    else, for the guard's rejected-plan test."""
+
+    def __init__(self, plan_results):
+        self._plan_results = list(plan_results)
+        self.plan_calls = []
+
+    def set_day_plan(self, title, blocks=None, date=None):
+        self.plan_calls.append(title)
+        return self._plan_results.pop(0)
+
+
+class PlanGuardTests(unittest.TestCase):
+    """The plan guard (stream_turn): a plan turn may not END on
+    prose. Field evidence: turn 1793587782994, 2026-11-01."""
+
+    def test_spark_prose_plan_is_refused_then_built(self):
+        transport = FakeTransport([
+            [tool_delta(0, call_id="w1", name="get_weather",
+                        arguments="{}"),
+             sse({}, finish="tool_calls"), DONE],
+            # Spark tries to finish with a narrated plan. On a
+            # fast-model round the draft is buffered — the guard
+            # discards it like an escalation's, so the room never
+            # hears a plan that does not exist.
+            [content("Tu sábado: desayuno en casa, compras al "
+                      "mediodía y pileta a la tarde."), DONE],
+            plan_tool_round(),
+            [content("Listo, tu sábado está en la pared."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(
+            source, "Plan my Saturday and get me home before the rain.")
+        self.assertEqual([tc["name"] for tc in marks["tool_calls"]],
+                         ["get_weather", "set_day_plan"])
+        self.assertEqual(sink.sentences,
+                         ["Listo, tu sábado está en la pared."])
+        self.assertTrue(any("plan guard" in n
+                            for n in marks.get("notes", [])))
+        # The request after the refused finish carries the
+        # correction as a system message.
+        third = transport.requests[2]
+        system_texts = [m["content"] for m in third["messages"]
+                        if m["role"] == "system"]
+        self.assertIn(PLAN_GUARD_GUIDANCE, system_texts)
+        self.assertTrue(source.last_turn["plan_requested"])
+        self.assertTrue(source.last_turn["plan_built"])
+
+    def test_wonder_prose_plan_is_refused_then_built(self):
+        transport = FakeTransport([
+            [tool_delta(0, call_id="e1", name="escalate",
+                        arguments='{"reason": "planning", "ack": '
+                                  '"Give me a moment."}'),
+             sse({}, finish="tool_calls"), DONE],
+            # Wonder's prose streams (deep rounds are not buffered)
+            # — it cannot be recalled, but the turn still may not
+            # END there: the guard forces the plan round.
+            [content("Your Saturday: breakfast, groceries, pool."),
+             DONE],
+            plan_tool_round(),
+            [content("Your Saturday plan is on the wall."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(
+            source, "Plan my Saturday and get me home before the rain.")
+        self.assertEqual([a.get("plan") for a in room.actions],
+                         ["Saturday plan"])
+        self.assertTrue(any("plan guard" in n
+                            for n in marks.get("notes", [])))
+        self.assertEqual(sink.sentences[-1],
+                         "Your Saturday plan is on the wall.")
+        self.assertTrue(source.last_turn["plan_built"])
+
+    def test_rejected_plan_does_not_discharge_the_guard(self):
+        room = ScriptedRoom([
+            {"ok": False, "error": "block 0 must start before it ends"},
+            {"ok": True, "queued": "Saturday plan"},
+        ])
+        transport = FakeTransport([
+            plan_tool_round(),
+            [content("Bueno, tu sábado queda así nomás."), DONE],
+            plan_tool_round(call_id="p2"),
+            [content("Ahora sí, plan en la pared."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        sink = PrintSink()
+        marks = run_turn(
+            source.stream_turn("planificá mi sábado", TOOL_SCHEMAS),
+            room, sink)
+        # The rejected call did not count: the prose finish after
+        # it was refused too, and only the accepted plan let the
+        # turn end.
+        self.assertEqual(len(room.plan_calls), 2)
+        self.assertEqual(sink.sentences, ["Ahora sí, plan en la pared."])
+        self.assertTrue(any("plan guard" in n
+                            for n in marks.get("notes", [])))
+
+    def test_weather_turn_never_trips_the_guard(self):
+        transport = FakeTransport([
+            [tool_delta(0, call_id="w1", name="get_weather",
+                        arguments="{}"),
+             sse({}, finish="tool_calls"), DONE],
+            [content("El finde viene con lluvia."), DONE],
+        ])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(
+            source, "What's the weather like this weekend?")
+        self.assertEqual(len(transport.requests), 2)
+        for body in transport.requests:
+            for m in body["messages"]:
+                self.assertNotIn(PLAN_GUARD_GUIDANCE,
+                                 m.get("content") or "")
+        self.assertFalse(source.last_turn["plan_requested"])
+        self.assertEqual(sink.sentences, ["El finde viene con lluvia."])
+
+    def test_guard_yields_to_the_round_cap(self):
+        # A model that spends every round on weather never gives
+        # the guard a finish to refuse: the cap's final answer
+        # ends the turn as before (the runner's composition
+        # backstop owns the wall for that case — test_live_turn).
+        tool_round = [
+            tool_delta(0, call_id="w1", name="get_weather",
+                       arguments="{}"),
+            sse({}, finish="tool_calls"),
+            DONE,
+        ]
+        transport = FakeTransport(
+            [list(tool_round) for _ in range(MAX_ROUNDS)]
+            + [[content("Respuesta final con lo que hay."), DONE]])
+        source = MetaSource(transport=transport)
+        marks, room, sink = run(source, "planificá mi sábado")
+        self.assertEqual(len(transport.requests), MAX_ROUNDS + 1)
+        self.assertEqual(sink.sentences,
+                         ["Respuesta final con lo que hay."])
+        self.assertFalse(source.last_turn["plan_built"])
 
 
 class ErrorTests(unittest.TestCase):

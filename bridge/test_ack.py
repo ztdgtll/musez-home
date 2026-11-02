@@ -28,11 +28,26 @@ MODEL_ACK = "Dame un momento, armo tu sábado."
 WONDER_LINE = "Armé tu sábado: salís a la mañana y volvés antes de la lluvia."
 
 
+PLAN_TOOL_ROUND = [
+    tool_delta(0, call_id="p1", name="set_day_plan",
+               arguments='{"title": "Saturday plan", "blocks": '
+                         '[{"start": "08:00", "end": "12:00", '
+                         '"label": "Salida", "kind": "activity"}]}'),
+    sse({}, finish="tool_calls"),
+    DONE,
+]
+
+
 def escalation_source(ack_marker, wonder=None) -> MetaSource:
     """A MetaSource whose Spark escalates, then Wonder answers.
 
     `ack_marker`: the ack value to put in the escalate arguments, or
-    None to omit the property entirely."""
+    None to omit the property entirely. The default request is a
+    plan request, so the default Wonder script OBEYS the plan
+    contract (meta_source's plan guard): it builds the plan with
+    set_day_plan and only then answers — a prose-only Wonder would
+    be refused the finish and the ack assertions below would be
+    testing the guard instead of the ack."""
     args: dict = {"reason": "multi-step planning"}
     if ack_marker is not None:
         args["ack"] = ack_marker
@@ -43,7 +58,8 @@ def escalation_source(ack_marker, wonder=None) -> MetaSource:
             sse({}, finish="tool_calls"),
             DONE,
         ],
-        wonder if wonder is not None else [content(WONDER_LINE), DONE],
+        *(wonder if wonder is not None
+          else [PLAN_TOOL_ROUND, [content(WONDER_LINE), DONE]]),
     ])
     return MetaSource(transport=transport)
 

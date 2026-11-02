@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import unittest
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -300,6 +301,126 @@ class PublishTests(unittest.TestCase):
         scheduled[0][1]()  # the timer fires: the home-return op is sent
         self.assertEqual(wall_calls,
                          [{"op": "return_home", "expect_turn": TURN}])
+
+
+def _daily_fixture():
+    today = date.today()
+    return {
+        "time": [(today + timedelta(days=i)).isoformat()
+                 for i in range(3)],
+        "temperature_2m_max": [84.0, 83.0, 82.0],
+        "temperature_2m_min": [73.0, 72.0, 71.0],
+        "precipitation_probability_max": [80, 10, 10],
+        "weathercode": [61, 0, 0],
+    }
+
+
+def _hourly_fixture():
+    # Dry until 13:00, rain band 13:00–18:00, dry again after:
+    # the composed plan must draw exactly that shape.
+    today = date.today().isoformat()
+    return {
+        "time": [f"{today}T{h:02d}:00" for h in range(24)],
+        "precipitation_probability":
+            [80 if 13 <= h < 18 else 10 for h in range(24)],
+    }
+
+
+class SlowSource:
+    """A source whose stream only starts after a delay — the
+    deadline tests' stand-in for a slow deep model."""
+
+    def __init__(self, delay, events):
+        self._delay = delay
+        self._events = events
+        self.last_turn = {"model_final": "fake-model",
+                          "escalated": False, "rounds": 1,
+                          "round_marks": [], "prompt_tokens": 10,
+                          "completion_tokens": 5}
+
+    def stream_turn(self, user_text, room_tools, lang=None):
+        time.sleep(self._delay)
+        yield from self._events
+
+
+class PlanRoutingTests(unittest.TestCase):
+    """The runner's plan backstops (field evidence: turn
+    1793587782994 ended as a weather card because the deadline
+    cut the turn mid-plan and composition read partial state)."""
+
+    def test_plan_turn_without_a_plan_falls_back_to_the_composed_plan(self):
+        # The source fetched weather and answered in prose, never
+        # building a plan: the runner composes the plan from the
+        # turn's own forecast instead of publishing the weather
+        # card the partial state offers.
+        source = FakeSource([
+            ("tool_call", "get_weather", {}),
+            ("token", "Suena bien tu sábado."),
+        ])
+        respond_runner, _ = make_respond_runner()
+        sink = make_sink(respond_runner)
+        room = StudioRoom(TURN, speak=sink.say,
+                          weather_runner=lambda: _daily_fixture(),
+                          hourly_runner=lambda: _hourly_fixture())
+        wall_runner, wall_calls = make_wall_runner()
+        with mock.patch.dict(os.environ, {"MUSEZ_BRAIN": "bridge"}):
+            record = run_live_turn(
+                "planificá mi sábado", TURN,
+                source=source, room=room, sink=sink,
+                **base_kwargs(wall_runner=wall_runner))
+        self.assertTrue(record["plan_requested"])
+        self.assertEqual(record["plan_fallback"],
+                         "composed_from_weather")
+        self.assertEqual(record["wall_outcome"], "plan")
+        self.assertIsNotNone(record["plan"])
+        kinds = [b["kind"] for b in record["plan"]["blocks"]]
+        self.assertEqual(kinds, ["activity", "free", "rain", "free"])
+        rain = record["plan"]["blocks"][2]
+        self.assertEqual((rain["start"], rain["end"]),
+                         ("13:00", "18:00"))
+        self.assertEqual(record["wall_publish"],
+                         {"applied": True, "rc": 0})
+        self.assertEqual(wall_calls[0]["kv"]["scene"], "plan")
+
+    def test_plan_turn_recovered_whole_after_the_deadline(self):
+        # The plan turn crosses the deadline but finishes inside
+        # the grace: it is answered whole — real marks, real
+        # sentences, no deadline error.
+        source = SlowSource(1.0, [("token", "Plan recuperado.")])
+        respond_runner, _ = make_respond_runner()
+        sink = make_sink(respond_runner)
+        room = StudioRoom(TURN, speak=sink.say)
+        wall_runner, wall_calls = make_wall_runner()
+        with mock.patch.dict(os.environ, {"MUSEZ_BRAIN": "bridge"}):
+            record = run_live_turn(
+                "planificá mi sábado", TURN,
+                source=source, room=room, sink=sink, deadline_s=0.3,
+                **base_kwargs(wall_runner=wall_runner))
+        self.assertTrue(record["deadline_exceeded"])
+        self.assertTrue(record["deadline_recovered"])
+        self.assertIsNone(record["turn_error"])
+        self.assertEqual(record["sentences"], ["Plan recuperado."])
+        self.assertEqual(record["playback"], "played")
+        self.assertEqual(record["wall_publish"],
+                         {"applied": True, "rc": 0})
+
+    def test_slow_non_plan_turn_still_times_out_as_before(self):
+        # No grace for ordinary turns: the deadline discards the
+        # turn exactly as it did before the plan backstops.
+        source = SlowSource(1.0, [("token", "Tarde.")])
+        respond_runner, _ = make_respond_runner()
+        sink = make_sink(respond_runner)
+        room = StudioRoom(TURN, speak=sink.say)
+        with mock.patch.dict(os.environ, {"MUSEZ_BRAIN": "bridge"}):
+            record = run_live_turn(
+                "hola", TURN,
+                source=source, room=room, sink=sink, deadline_s=0.3,
+                **base_kwargs())
+        self.assertTrue(record["deadline_exceeded"])
+        self.assertFalse(record["deadline_recovered"])
+        self.assertTrue(record["turn_error"].startswith("deadline:"))
+        self.assertFalse(record["plan_requested"])
+        self.assertIsNone(record["plan_fallback"])
 
 
 if __name__ == "__main__":

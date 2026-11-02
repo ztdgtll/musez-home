@@ -83,8 +83,9 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, "/opt/muse/skills/custom-connector-setup/bin")
 
 from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
+from .day_plan import compose_day_plan
 from .meta_source import (MetaAPIError, MetaSource, compose_system_prompt,
-                          resolve_turn_lang)
+                          detect_plan_request, resolve_turn_lang)
 from .studio_room import (
     SSH_CONFIG,
     SSH_HOST,
@@ -96,7 +97,6 @@ from .studio_room import (
 from .studio_sink import Respond2Transport, StudioSink, TransportError
 from .studio_turn import (
     SAYSEQ_LOG_CMD,
-    _run_with_deadline,
     _ssh_cat,
     compose_final_scene,
     find_first_play,
@@ -108,6 +108,15 @@ from .turn import run_turn
 PI_TZ = ZoneInfo("America/New_York")
 
 LIVE_DEADLINE_S = 60.0
+# A plan turn that crosses the deadline MID-PLAN gets this much
+# grace before the turn is treated as lost (see _run_turn_with_
+# deadline and the composition backstop below): the grace exists
+# so a plan that demonstrably exists — the flow is in flight —
+# is recovered whole instead of being replaced by whatever
+# partial state the room happens to hold at the deadline (room
+# evidence 2026-11-01, turn 1793587782994: the weather card of
+# a plan turn, published while the plan was still being built).
+PLAN_GRACE_S = 45.0
 PUBLISH_WAIT_S = 120.0
 RESULT_HOLD_S = 15.0
 PRESENCE_CMD = "cat /home/ztdgtll/.musez-presence.md"
@@ -220,6 +229,43 @@ def schedule_home_return(turn_id: int, delay_s: float = RESULT_HOLD_S,
     return {"scheduled_s": delay_s, "expect_turn": turn_id}
 
 
+def _run_turn_with_deadline(fn, deadline_s: float, grace_s: float = 0.0):
+    """Run `fn` on a daemon thread, like studio_turn's deadline
+    helper, with one addition: a bounded GRACE join past the
+    deadline. Returns (value, error, recovered):
+
+    - finished inside the deadline: (value, None, False);
+    - still running at the deadline but finished within the
+      grace: (value, None, True) — the turn is LATE, not lost,
+      and its real marks are used whole;
+    - still running after deadline + grace: (None, TimeoutError,
+      False) and the thread is abandoned exactly as before.
+
+    `fn`'s own exception is re-raised whenever the thread
+    finished, on either side of the deadline."""
+    box: dict = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # ferried to the calling thread
+            box["error"] = e
+
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    th.join(deadline_s)
+    recovered = False
+    if th.is_alive() and grace_s > 0:
+        th.join(grace_s)
+        recovered = not th.is_alive()
+    if th.is_alive():
+        return None, TimeoutError(
+            f"turn exceeded the {deadline_s:.0f} s deadline"), False
+    if "error" in box:
+        raise box["error"]
+    return box.get("value"), None, recovered
+
+
 # -- one live turn ------------------------------------------------------
 
 
@@ -229,10 +275,12 @@ def run_live_turn(transcript: str, turn_id: int, *,
                   gate_reader=None, wall_reader=None,
                   presence_reader=None, results=None, skip_record=False,
                   deadline_s: float = LIVE_DEADLINE_S,
+                  plan_grace_s: float = PLAN_GRACE_S,
                   publish_wait_s: float = PUBLISH_WAIT_S,
                   home_scheduler=None,
                   home_delay_s: float = RESULT_HOLD_S,
-                  lang: str = None) -> dict:
+                  lang: str = None,
+                  ack_prefilled: bool = False) -> dict:
     """Run one live turn end to end and return its record (also
     appended to the live results JSONL unless skip_record).
 
@@ -251,6 +299,13 @@ def run_live_turn(transcript: str, turn_id: int, *,
     turn_lang = resolve_turn_lang(transcript, lang)
     lang_source = "stt" if lang in ("en", "es") else "detect"
 
+    # The plan verdict (meta_source.detect_plan_request): a turn
+    # that asks for a day plan arms this runner's two backstops —
+    # the deadline grace and the deterministic composition below —
+    # so the turn cannot END as a weather card whatever the model
+    # or the clock did (turn 1793587782994, see PLAN_GRACE_S).
+    plan_requested = detect_plan_request(transcript)
+
     # The API switch, before ANY network-shaped work — the same
     # refusal contract as the mock runner, with the caller's turn id.
     mode = brain_mode()
@@ -262,6 +317,8 @@ def run_live_turn(transcript: str, turn_id: int, *,
             "turn_lang": turn_lang, "lang_source": lang_source,
             "rid": None, "playback": "skipped", "turn_error": None,
             "tool_calls": [], "ack": None, "sentences": [],
+            "plan_requested": plan_requested, "plan_fallback": None,
+            "deadline_exceeded": False, "deadline_recovered": False,
             "presence_loaded": False, "wall_publish": None,
             "home_return": None,
             "wall_after": {},
@@ -278,7 +335,8 @@ def run_live_turn(transcript: str, turn_id: int, *,
             system_prompt=compose_system_prompt(presence))
     if sink is None:
         sink = StudioSink(Respond2Transport(runner=respond_runner),
-                          turn=turn_id, lang=turn_lang)
+                          turn=turn_id, lang=turn_lang,
+                          ack_external=ack_prefilled)
     if room is None:
         room = StudioRoom(turn_id, speak=sink.say,
                           hourly_runner=HourlyWxRunner())
@@ -288,18 +346,43 @@ def run_live_turn(transcript: str, turn_id: int, *,
     marks: dict = {"tool_calls": []}
     turn_error = None
     deadline_exceeded = False
+    deadline_recovered = False
     try:
-        marks, err = _run_with_deadline(
+        # A plan turn gets the grace join past the deadline; every
+        # other turn's deadline semantics are exactly as before.
+        marks, err, deadline_recovered = _run_turn_with_deadline(
             lambda: run_turn(source.stream_turn(transcript, None,
                                                 lang=turn_lang),
                              room, sink),
-            deadline_s)
+            deadline_s,
+            grace_s=plan_grace_s if plan_requested else 0.0)
         if err is not None:
             deadline_exceeded = True
             turn_error = f"deadline: {err}"
             marks = {"tool_calls": [], "t_full": deadline_s * 1000.0}
+        elif deadline_recovered:
+            # Late but whole: the record keeps BOTH facts — the
+            # deadline was crossed, and the turn that crossed it
+            # is the turn being answered, marks and plan intact.
+            deadline_exceeded = True
     except Exception as e:
         turn_error = f"{type(e).__name__}: {e}"
+    # The composition backstop: a plan turn that reaches this
+    # point with NO plan on the room — the model never built one,
+    # or its thread was abandoned past the grace — must not
+    # compose into the weather card its partial state offers.
+    # When the turn fetched weather, the deterministic composer
+    # (day_plan.compose_day_plan, the same one the mock source
+    # has always used) builds the plan from that real forecast:
+    # the activity in the dry hours, the rain band from the
+    # hourly probabilities. Recorded as a fallback, never silent.
+    plan_fallback = None
+    if plan_requested and not room.plan_scenes \
+            and room.weather is not None:
+        composed = compose_day_plan(room.weather)
+        if composed is not None:
+            room.plan_scenes.append(composed)
+            plan_fallback = "composed_from_weather"
     title, lines, scene_payload = compose_final_scene(
         "", room, sink, lang=turn_lang)
     plan = (scene_payload if scene_payload is not None
@@ -410,6 +493,15 @@ def run_live_turn(transcript: str, turn_id: int, *,
             wall_runner=wall_runner, scheduler=home_scheduler)
     wall = (wall_reader or read_wall_state)()
     last_turn = getattr(source, "last_turn", {}) or {}
+    # The record's ack: the loop's mark when an ack event fired
+    # (with ack_external it carries the "external" marker and no
+    # dispatch happened bridge-side), else — for a prefilled turn
+    # that never escalated — the standing fact that the listener's
+    # filler discharged the acknowledgement before the queue.
+    ack_record = marks.get("ack")
+    if ack_record is None and ack_prefilled:
+        ack_record = {"external": "listener_filler", "ok": True,
+                      "dispatched": False, "text": None}
 
     record = {
         "mode": "live",
@@ -429,11 +521,15 @@ def run_live_turn(transcript: str, turn_id: int, *,
         "playback": playback,
         "turn_error": turn_error,
         "deadline_exceeded": deadline_exceeded,
+        "deadline_recovered": deadline_recovered,
+        "plan_requested": plan_requested,
+        "plan_fallback": plan_fallback,
         "t_first_sentence_ms": marks.get("t_first_sentence"),
+        "t_ack_ms": marks.get("t_ack"),
         "t_full_ms": marks.get("t_full"),
         "t_first_audio_ms": t_first_audio_ms,
         "tool_calls": [tc["name"] for tc in marks["tool_calls"]],
-        "ack": marks.get("ack"),
+        "ack": ack_record,
         "sentences": sink.sentences,
         "presence_loaded": bool(presence),
         "wall_outcome": wall_outcome,
