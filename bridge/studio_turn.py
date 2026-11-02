@@ -47,6 +47,7 @@ PI_TZ = ZoneInfo("America/New_York")
 from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
 from .day_plan import plan_card
 from .mock_source import TURNS
+from .stat_scene import compose_field_stat, field_stat_card
 from .studio_room import (
     SCENE_LINE_MAX,
     SSH_CONFIG,
@@ -165,16 +166,30 @@ def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink,
     """The turn's final scene as (title, lines, scene): a validated
     day plan outranks every card composition — the flush then ships
     the plan payload as the dispatch's structured scene, with a card
-    summary of the SAME plan as its title+lines. Without a plan this
-    is exactly compose_scene and scene is None. A plan the room
-    rejected never got queued, so an invalid plan lands here as its
-    absence — the card fallback below is the fallback, and the turn
-    is never lost over a bad payload. Bridge-composed text follows
-    the turn's language (`lang`)."""
+    summary of the SAME plan as its title+lines. A hackathon-field
+    result composes a stat payload the same way (bridge/stat_scene)
+    — the count as the wall's hero number, with the field card's own
+    lines as its title+lines. Both structured payloads outrank the
+    model's own scene candidate: they are composed from THIS turn's
+    validated data (the plan the room accepted, the count the API
+    just returned), while the candidate is the model's improvisation
+    — the same reason the plan outranks it. (Live evidence
+    2026-11-01: with the field ranked as a plain card, the model's
+    improvised scene displaced the hero number entirely.) Without
+    either this is exactly compose_scene and scene is None. A plan
+    the room rejected never got queued, so an invalid plan lands
+    here as its absence — the card fallback below is the fallback,
+    and the turn is never lost over a bad payload. Bridge-composed
+    text follows the turn's language (`lang`)."""
     if room.plan_scenes:
         plan = room.plan_scenes[-1]
         title, lines = plan_card(plan, lang=lang)
         return title, lines, plan
+    if room.field is not None:
+        stat = compose_field_stat(room.field, lang=lang)
+        if stat is not None:
+            title, lines = field_stat_card(stat, lang=lang)
+            return title, lines, stat
     title, lines = compose_scene(name, room, sink, lang=lang)
     return title, lines, None
 
@@ -319,7 +334,7 @@ def main(argv=None) -> int:
     # every scene validation turned away on the way — neither is
     # left implicit in the wall's after-state.
     if scene is not None:
-        wall_outcome = "plan"
+        wall_outcome = scene.get("kind") or "plan"
     elif room.wall_scenes:
         wall_outcome = "tool_scene"
     elif room.weather is not None:
@@ -391,7 +406,10 @@ def main(argv=None) -> int:
         "ack": marks.get("ack"),
         "sentences": sink.sentences,
         "wall_outcome": wall_outcome,
-        "plan": scene,
+        "plan": (scene if scene is not None
+                 and scene.get("kind") == "plan" else None),
+        "stat": (scene if scene is not None
+                 and scene.get("kind") == "stat" else None),
         "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_after": wall,
     }

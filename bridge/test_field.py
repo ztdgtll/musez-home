@@ -29,10 +29,14 @@ import json
 import unittest
 import urllib.error
 
-from .meta_source import MetaSource
+from . import wall_apply
+from .meta_source import (REPORT_CLOSE_GUIDANCE, SYSTEM_PROMPT,
+                          MetaSource)
+from .stat_scene import (compose_field_stat, field_stat_card,
+                         stat_problem)
 from .studio_room import GitHubFieldRunner, StudioRoom
 from .studio_sink import StudioSink
-from .studio_turn import compose_scene
+from .studio_turn import compose_final_scene, compose_scene
 from .tools import TOOL_SCHEMAS, DryRoom, dispatch
 from .turn import PrintSink, run_turn
 
@@ -266,6 +270,151 @@ class FieldTurnTests(unittest.TestCase):
         self.assertEqual(result["projects"], 611)
         self.assertEqual(room.field["projects"], 611)
         self.assertIn("611", sink.sentences[0])
+
+
+class StatSceneTests(unittest.TestCase):
+    """The hero-number payload the field turn ships: composed from
+    the turn's own count, validated to the wall's budget, with the
+    field card's lines as its summary — the number on the wall and
+    the lines beside the avatar can never disagree."""
+
+    def test_composes_from_the_live_count_in_english(self):
+        stat = compose_field_stat({"projects": 611}, lang="en")
+        self.assertEqual(stat, {
+            "kind": "stat", "value": 611, "label": "THE FIELD",
+            "sub": "projects competing in the hackathon"})
+        self.assertIsNone(stat_problem(stat))
+
+    def test_caption_follows_the_turn_language(self):
+        stat = compose_field_stat({"projects": 611}, lang="es")
+        self.assertEqual(stat["sub"],
+                         "proyectos compitiendo en el hackathon")
+        self.assertEqual(stat["label"], "THE FIELD")
+
+    def test_unusable_counts_compose_nothing(self):
+        for bad in (None, {}, {"projects": None}, {"projects": "611"},
+                    {"projects": True}, {"projects": -1},
+                    {"projects": 61.1}):
+            self.assertIsNone(compose_field_stat(bad, lang="en"),
+                              msg=f"field={bad!r}")
+
+    def test_problem_names_the_limit_broken(self):
+        stat = compose_field_stat({"projects": 611}, lang="en")
+        self.assertIn("24", stat_problem({**stat, "label": "X" * 25}))
+        self.assertIn("48", stat_problem({**stat, "sub": "X" * 49}))
+        self.assertIn("integer", stat_problem({**stat, "value": "611"}))
+        self.assertIn("kind", stat_problem({**stat, "kind": "plan"}))
+
+    def test_card_lines_match_the_plain_field_card(self):
+        stat = compose_field_stat({"projects": 611}, lang="en")
+        title, lines = field_stat_card(stat, lang="en")
+        self.assertEqual(title, "THE FIELD")
+        self.assertEqual(lines, ["611 projects competing",
+                                 "Meta AI Developer Hackathon"])
+
+
+class FinalSceneStatTests(unittest.TestCase):
+    """compose_final_scene precedence: the structured payloads
+    (plan, then stat) outrank the model's own scene candidate —
+    they are composed from this turn's validated data, the
+    candidate is an improvisation. Live evidence 2026-11-01: as a
+    plain card the field lost to an improvised scene and the hero
+    number never shipped; compose_scene's own order (model scene
+    over the plain field CARD) is unchanged below that rank."""
+
+    def sink(self) -> StudioSink:
+        return StudioSink(lambda *a: {"rid": None}, turn=1)
+
+    def room_with_field(self, count: int = 611) -> StudioRoom:
+        room = StudioRoom(turn=1, field_runner=lambda: count)
+        room.get_hackathon_field()
+        return room
+
+    def test_field_turn_ships_the_stat_payload(self):
+        title, lines, scene = compose_final_scene(
+            "", self.room_with_field(), self.sink(), lang="en")
+        self.assertEqual(scene["kind"], "stat")
+        self.assertEqual(scene["value"], 611)
+        self.assertEqual(title, "THE FIELD")
+        self.assertEqual(lines[0], "611 projects competing")
+
+    def test_stat_outranks_the_models_own_scene(self):
+        room = self.room_with_field()
+        room.set_wall_scene("Hackathon Field",
+                            "611 projects competing right now")
+        title, lines, scene = compose_final_scene(
+            "", room, self.sink(), lang="en")
+        self.assertEqual(scene["kind"], "stat")
+        self.assertEqual(scene["value"], 611)
+        self.assertEqual(title, "THE FIELD")
+
+    def test_stat_outranks_a_weather_card_too(self):
+        room = self.room_with_field()
+        room.weather = {"condition": "Soleado", "temp_max_f": 90.0,
+                        "temp_min_f": 75.0, "precip_prob_max": 10.0}
+        title, lines, scene = compose_final_scene(
+            "", room, self.sink(), lang="es")
+        self.assertEqual(scene["kind"], "stat")
+        self.assertEqual(title, "THE FIELD")
+
+
+class WallApplyStatTests(unittest.TestCase):
+    """The Pi-side gate: a stat payload builds an argv only beside
+    scene 'stat', and an unusable payload is refused before any
+    write — the same discipline the plan payload lives under."""
+
+    GOOD_STAT = {"kind": "stat", "value": 611, "label": "THE FIELD",
+                 "sub": "projects competing in the hackathon"}
+
+    def payload(self, kv):
+        return {"turn": 1, "phase": 5, "kv": kv}
+
+    def test_stat_payload_builds_an_argv_with_the_stat_as_data(self):
+        argv = wall_apply.build_argv(self.payload(
+            {"scene": "stat", "title": "THE FIELD",
+             "lines": ["611 projects competing",
+                       "Meta AI Developer Hackathon"],
+             "stat": self.GOOD_STAT}))
+        self.assertIn("scene=stat", argv)
+        stat_arg = next(a for a in argv if a.startswith("stat="))
+        self.assertIn('"value": 611', stat_arg)
+
+    def test_stat_without_the_stat_scene_is_refused(self):
+        with self.assertRaises(ValueError):
+            wall_apply.build_argv(self.payload(
+                {"scene": "answer", "stat": self.GOOD_STAT}))
+
+    def test_stat_scene_without_a_payload_is_refused(self):
+        with self.assertRaises(ValueError):
+            wall_apply.build_argv(self.payload({"scene": "stat"}))
+
+    def test_unusable_stat_is_refused_before_any_write(self):
+        ran = []
+
+        class Proc:
+            returncode = 0
+
+        with self.assertRaises(ValueError) as ctx:
+            wall_apply.apply(
+                self.payload({"scene": "stat",
+                              "stat": {**self.GOOD_STAT,
+                                       "value": "611"}}),
+                runner=lambda a: ran.append(a) or Proc())
+        self.assertIn("integer", str(ctx.exception))
+        self.assertEqual(ran, [])
+
+
+class ReportCloseGuidanceTests(unittest.TestCase):
+    """The standing style rule rides the system prompt: a reply
+    that reports a fact closes with its meaning, and a field
+    report closes on the real-room contrast — guidance for the
+    model to word, never a scripted line in the bridge."""
+
+    def test_guidance_rides_the_system_prompt(self):
+        self.assertIn(REPORT_CLOSE_GUIDANCE, SYSTEM_PROMPT)
+        self.assertIn("do not close by restating it",
+                      REPORT_CLOSE_GUIDANCE)
+        self.assertIn("real room", REPORT_CLOSE_GUIDANCE)
 
 
 if __name__ == "__main__":

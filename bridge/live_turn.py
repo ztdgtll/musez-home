@@ -173,14 +173,20 @@ def _played_done(sayseq_text: str, rid: str, last_index: int) -> bool:
 
 
 def publish_final_scene(turn_id: int, title: str, lines: list,
-                        plan, wall_runner=None) -> dict:
+                        scene_payload, wall_runner=None) -> dict:
     """The turn's closing wall publish (module docstring): phase 5,
-    NOT sticky — the composed scene, plan payload included when the
-    turn produced one. Returns wall_apply's parsed reply."""
-    kv: dict = {"scene": "plan" if plan else "answer",
+    NOT sticky — the composed scene, structured payload included
+    when the turn produced one (a day plan ships as scene "plan"
+    with kv["plan"], a field stat as scene "stat" with kv["stat"];
+    anything else is the plain answer card). Returns wall_apply's
+    parsed reply."""
+    kind = (scene_payload.get("kind")
+            if isinstance(scene_payload, dict) else None)
+    structured = kind in ("plan", "stat")
+    kv: dict = {"scene": kind if structured else "answer",
                 "title": title, "lines": lines, "avatar": "idle"}
-    if plan:
-        kv["plan"] = plan
+    if structured:
+        kv[kind] = scene_payload
     payload = {"turn": turn_id, "phase": 5, "kv": kv}
     return SshJsonRunner(WALL_APPLY_CMD, runner=wall_runner)(payload)
 
@@ -294,11 +300,17 @@ def run_live_turn(transcript: str, turn_id: int, *,
             marks = {"tool_calls": [], "t_full": deadline_s * 1000.0}
     except Exception as e:
         turn_error = f"{type(e).__name__}: {e}"
-    title, lines, plan = compose_final_scene("", room, sink,
-                                             lang=turn_lang)
-    sink.set_scene(title, lines, scene=plan)
+    title, lines, scene_payload = compose_final_scene(
+        "", room, sink, lang=turn_lang)
+    plan = (scene_payload if scene_payload is not None
+            and scene_payload.get("kind") == "plan" else None)
+    stat = (scene_payload if scene_payload is not None
+            and scene_payload.get("kind") == "stat" else None)
+    sink.set_scene(title, lines, scene=scene_payload)
     if plan is not None:
         wall_outcome = "plan"
+    elif stat is not None:
+        wall_outcome = "stat"
     elif room.wall_scenes:
         wall_outcome = "tool_scene"
     elif room.weather is not None:
@@ -359,14 +371,14 @@ def run_live_turn(transcript: str, turn_id: int, *,
                 # 30 s linger away — the publish takes the phase
                 # and the close then drops harmlessly against it.
                 wall_publish = publish_final_scene(
-                    turn_id, title, lines, plan, wall_runner=wall_runner)
+                    turn_id, title, lines, scene_payload, wall_runner=wall_runner)
                 published = True
             if _played_done(seq_text, rid, last_idx):
                 if playback == "pending":
                     playback = "played"
                 if not published:
                     wall_publish = publish_final_scene(
-                        turn_id, title, lines, plan, wall_runner=wall_runner)
+                        turn_id, title, lines, scene_payload, wall_runner=wall_runner)
                     published = True
                 home_return = schedule_home_return(
                     turn_id, home_delay_s,
@@ -426,6 +438,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
         "presence_loaded": bool(presence),
         "wall_outcome": wall_outcome,
         "plan": plan,
+        "stat": stat,
         "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_publish": wall_publish,
         "home_return": home_return,

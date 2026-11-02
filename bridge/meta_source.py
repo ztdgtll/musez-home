@@ -99,6 +99,25 @@ SPOKEN_ROUNDS_GUIDANCE = (
     "followed by a summary that restates it."
 )
 
+# A reply that reports a fact owes the room the fact's MEANING, not
+# an echo of it. Field evidence (live field turn, 2026-11-01): the
+# count landed — and the reply then closed flat, restating the same
+# number as its own conclusion ('eso es cuántos proyectos hay en
+# el hackathon'), so the turn's biggest moment deflated into a
+# repetition. The guidance is general (any reported fact or
+# number) plus its sharpest case: a report about the hackathon
+# field closes on the contrast that makes the number matter —
+# worded by the model, in the turn's language, never scripted by
+# the bridge.
+REPORT_CLOSE_GUIDANCE = (
+    "When your reply reports a fact or a number, do not close by "
+    "restating it: close with what it means — one short sentence "
+    "of significance, never a repetition of the data. When you "
+    "report the size of the hackathon field, close on the "
+    "contrast: of all those projects, this one is answering live "
+    "from the user's real room."
+)
+
 # A turn's language follows the REQUEST in that turn — never the
 # language the room's standing context happens to be written in.
 # Field evidence (live session 2026-11-01): an English request got
@@ -224,7 +243,8 @@ SYSTEM_PROMPT = (
     "cleaning the studio. "
     + SHORT_OPENER_GUIDANCE + " "
     + SPOKEN_ROUNDS_GUIDANCE + " "
-    + TURN_LANGUAGE_GUIDANCE
+    + TURN_LANGUAGE_GUIDANCE + " "
+    + REPORT_CLOSE_GUIDANCE
 )
 
 def compose_system_prompt(presence: str | None = None) -> str:

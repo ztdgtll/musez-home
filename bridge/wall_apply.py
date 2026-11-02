@@ -29,6 +29,11 @@ approval step. This helper's contract ends at passing a well-formed,
 validated payload through to setstate, byte-identical like any other
 content.
 
+A stat scene travels the same way, as kv {"scene": "stat",
+"stat": {...}} — the hero-number payload bridge/stat_scene.py
+validates (an integer count, a short label, a short caption),
+validated here to the same limits before any argv is built.
+
 It builds the setstate.py argv as a list and runs it locally — setstate.py
 is the wall's only sanctioned write path, with its turn/phase guard and
 exit codes (0 applied, 4 rejected by the guard, 3 lock timeout, 2 usage).
@@ -50,7 +55,7 @@ STATE_PATH = os.environ.get(
     os.path.join(os.path.dirname(SETSTATE), "state.json"))
 
 # The bridge may only touch scene-content keys — never bookkeeping.
-ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave", "plan"}
+ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave", "plan", "stat"}
 
 # The wall's closed design budget for one scene — the same limits
 # bridge/studio_room.py validates before a scene is ever queued.
@@ -66,6 +71,12 @@ SCENE_MAX_LINES = 2
 PLAN_MAX_BLOCKS = 6
 PLAN_LABEL_MAX = 48
 PLAN_BLOCK_KINDS = ("activity", "rain", "free", "note")
+
+# The stat budget — mirrors bridge/stat_scene.py (same standalone
+# duplication rule): the label fits the title budget, the caption
+# fits the line budget, the value is a non-negative integer.
+STAT_LABEL_MAX = 24
+STAT_SUB_MAX = 48
 
 
 def _validate_scene(kv: dict) -> None:
@@ -187,6 +198,49 @@ def _validate_plan(kv: dict) -> None:
         prev_end = end
 
 
+def _validate_stat(kv: dict) -> None:
+    """Refuse a stat payload the design system cannot display.
+
+    Mirrors bridge/stat_scene.py's stat_problem for the payload
+    that travels here as kv["stat"] beside kv["scene"] == "stat";
+    raises ValueError naming the limit broken (apply() reports
+    rc 2)."""
+    stat = kv.get("stat")
+    if stat is None:
+        if kv.get("scene") == "stat":
+            raise ValueError("scene 'stat' requires a stat payload")
+        return
+    if kv.get("scene") != "stat":
+        raise ValueError("a stat payload requires scene 'stat'")
+    if not isinstance(stat, dict):
+        raise ValueError("stat must be an object")
+    if stat.get("kind") != "stat":
+        raise ValueError("stat kind must be 'stat'")
+    value = stat.get("value")
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError("stat value must be an integer")
+    if value < 0:
+        raise ValueError("stat value must not be negative")
+    label = stat.get("label")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("stat label must be text")
+    if "\n" in label or "\r" in label:
+        raise ValueError("stat label must be a single line (no newlines)")
+    if len(label) > STAT_LABEL_MAX:
+        raise ValueError(
+            f"stat label is {len(label)} characters; "
+            f"the limit is {STAT_LABEL_MAX}")
+    sub = stat.get("sub")
+    if not isinstance(sub, str) or not sub.strip():
+        raise ValueError("stat sub must be text")
+    if "\n" in sub or "\r" in sub:
+        raise ValueError("stat sub must be a single line (no newlines)")
+    if len(sub) > STAT_SUB_MAX:
+        raise ValueError(
+            f"stat sub is {len(sub)} characters; "
+            f"the limit is {STAT_SUB_MAX}")
+
+
 def build_argv(payload: dict) -> list:
     if not isinstance(payload, dict):
         raise ValueError("payload must be a JSON object")
@@ -204,6 +258,7 @@ def build_argv(payload: dict) -> list:
         raise ValueError(f"keys not allowed: {sorted(bad)}")
     _validate_scene(kv)
     _validate_plan(kv)
+    _validate_stat(kv)
     argv = ["python3", SETSTATE, f"--turn={turn}", f"--phase={phase}"]
     if payload.get("sticky"):
         argv.append("--sticky")
