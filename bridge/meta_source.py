@@ -109,13 +109,25 @@ SPOKEN_ROUNDS_GUIDANCE = (
 # field closes on the contrast that makes the number matter —
 # worded by the model, in the turn's language, never scripted by
 # the bridge.
+#
+# The same report also owes its SOURCE, out loud. Javier's call
+# (2026-11-01, after the field-stat verification): the methodology
+# note lives in the video caption and the README, but the room
+# itself must say where its number comes from — a listener who
+# never reads either should still hear that the count is live and
+# where it was counted. One brief clause inside the model's own
+# sentences, not a methodology lecture and not a scripted line:
+# the attribution rides the same guidance mechanism as the close.
 REPORT_CLOSE_GUIDANCE = (
     "When your reply reports a fact or a number, do not close by "
     "restating it: close with what it means — one short sentence "
     "of significance, never a repetition of the data. When you "
-    "report the size of the hackathon field, close on the "
-    "contrast: of all those projects, this one is answering live "
-    "from the user's real room."
+    "report the size of the hackathon field, name the source in "
+    "one brief clause — the number is counted live, right now, "
+    "from GitHub's public search of the projects carrying the "
+    "hackathon's name — and close on the contrast: of all those "
+    "projects, this one is answering live from the user's real "
+    "room."
 )
 
 # A turn's language follows the REQUEST in that turn — never the

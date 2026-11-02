@@ -416,6 +416,19 @@ class ReportCloseGuidanceTests(unittest.TestCase):
                       REPORT_CLOSE_GUIDANCE)
         self.assertIn("real room", REPORT_CLOSE_GUIDANCE)
 
+    def test_field_report_attributes_its_source_out_loud(self):
+        """Javier's call (2026-11-01): the field count's source —
+        GitHub's public search, counted live — must be IN the
+        spoken answer, not only in the video caption and the
+        README. The guidance asks for one brief clause, and the
+        real-room contrast stays the close."""
+        self.assertIn("GitHub's public search", REPORT_CLOSE_GUIDANCE)
+        self.assertIn("counted live", REPORT_CLOSE_GUIDANCE)
+        # Attribution first, contrast last: the guidance names the
+        # source before it asks for the closing contrast.
+        self.assertLess(REPORT_CLOSE_GUIDANCE.index("GitHub"),
+                        REPORT_CLOSE_GUIDANCE.index("real room"))
+
 
 if __name__ == "__main__":
     unittest.main()
