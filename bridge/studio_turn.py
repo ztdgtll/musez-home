@@ -44,6 +44,7 @@ from zoneinfo import ZoneInfo
 # against a Pi-local t_start, never the host's local time.
 PI_TZ = ZoneInfo("America/New_York")
 
+from .astro_scene import ASTRO_TITLE, astro_caption_for, compose_astro_dispatch
 from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
 from .day_plan import plan_card
 from .mock_source import TURNS
@@ -180,18 +181,21 @@ def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink,
     summary of the SAME plan as its title+lines. A hackathon-field
     result composes a stat payload the same way (bridge/stat_scene)
     — the count as the wall's hero number, with the field card's own
-    lines as its title+lines. Both structured payloads outrank the
-    model's own scene candidate: they are composed from THIS turn's
-    validated data (the plan the room accepted, the count the API
-    just returned), while the candidate is the model's improvisation
-    — the same reason the plan outranks it. (Live evidence
-    2026-11-01: with the field ranked as a plain card, the model's
-    improvised scene displaced the hero number entirely.) Without
-    either this is exactly compose_scene and scene is None. A plan
-    the room rejected never got queued, so an invalid plan lands
-    here as its absence — the card fallback below is the fallback,
-    and the turn is never lost over a bad payload. Bridge-composed
-    text follows the turn's language (`lang`)."""
+    lines as its title+lines. A successful Astro dispatch composes
+    an astro payload the same way (bridge/astro_scene) — the wall's
+    delivery card, its lines the model's own reply sentences. All
+    structured payloads outrank the model's own scene candidate:
+    they are composed from THIS turn's validated data (the plan the
+    room accepted, the count the API just returned, the dispatch
+    the trigger just fired), while the candidate is the model's
+    improvisation — the same reason the plan outranks it. (Live
+    evidence 2026-11-01: with the field ranked as a plain card, the
+    model's improvised scene displaced the hero number entirely.)
+    Without any this is exactly compose_scene and scene is None. A
+    plan the room rejected never got queued, so an invalid plan
+    lands here as its absence — the card fallback below is the
+    fallback, and the turn is never lost over a bad payload.
+    Bridge-composed text follows the turn's language (`lang`)."""
     if room.plan_scenes:
         plan = room.plan_scenes[-1]
         title, lines = plan_card(plan, lang=lang)
@@ -201,6 +205,12 @@ def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink,
         if stat is not None:
             title, lines = field_stat_card(stat, lang=lang)
             return title, lines, stat
+    if room.astro is not None:
+        astro = compose_astro_dispatch(room.astro, lang=lang)
+        if astro is not None:
+            lines = [_truncate(s, SCENE_LINE_MAX)
+                     for s in sink.sentences[:2]]
+            return ASTRO_TITLE, lines, astro
     title, lines = compose_scene(name, room, sink, lang=lang,
                                  transcript=transcript)
     return title, lines, None
@@ -342,6 +352,14 @@ def main(argv=None) -> int:
     except Exception as e:
         turn_error = f"{type(e).__name__}: {e}"
     title, lines, scene = compose_final_scene(name, room, sink)
+    # The dispatch's spoken signature (astro_scene.ASTRO_CAPTION):
+    # a successful call_astro appends it as the turn's FINAL
+    # spoken sentence — after composition, so the card's lines
+    # stay the model's own sentences, and before the flush, so
+    # it rides this same dispatch.
+    astro_caption = astro_caption_for(getattr(room, "astro", None))
+    if astro_caption is not None:
+        sink.say(astro_caption)
     sink.set_scene(title, lines, scene=scene)
     # Which composition the turn's single wall write carried, and
     # every scene validation turned away on the way — neither is
@@ -423,6 +441,8 @@ def main(argv=None) -> int:
                  and scene.get("kind") == "plan" else None),
         "stat": (scene if scene is not None
                  and scene.get("kind") == "stat" else None),
+        "astro": (scene if scene is not None
+                  and scene.get("kind") == "astro" else None),
         "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_after": wall,
     }

@@ -362,6 +362,12 @@ class StudioRoom:
         # card, and a failed lookup leaves it None — no card, and
         # no number anywhere in the turn.
         self.field = None
+        # The successful Astro dispatch of THIS turn, set only by
+        # a successful call_astro (same discipline as `field`):
+        # scene composition reads it for the delivery card, and a
+        # failed dispatch leaves it None — no card, and no robot
+        # errand claimed anywhere in the turn.
+        self.astro = None
 
     def set_wall_scene(self, title: str, line1: str = "", line2: str = "") -> dict:
         """Record the turn's scene candidate. Does NOT write the wall:
@@ -519,7 +525,17 @@ class StudioRoom:
         in the result. Any problem — unknown destination,
         destination not configured, client unavailable, the trigger
         itself failing — returns {"ok": False, "error": ...}
-        instead of raising into the turn."""
+        instead of raising into the turn.
+
+        A successful dispatch is also recorded on `self.astro`
+        (destination + ok) for scene composition — the same
+        discipline as `self.field`; a failure records nothing."""
+        result = self._fire_astro(destination)
+        if isinstance(result, dict) and result.get("ok"):
+            self.astro = {"destination": destination, "ok": True}
+        return result
+
+    def _fire_astro(self, destination: str) -> dict:
         env_name = (ASTRO_URL_ENVS.get(destination)
                     if isinstance(destination, str) else None)
         if env_name is None:

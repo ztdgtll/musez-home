@@ -34,6 +34,13 @@ A stat scene travels the same way, as kv {"scene": "stat",
 validates (an integer count, a short label, a short caption),
 validated here to the same limits before any argv is built.
 
+An astro scene travels the same way, as kv {"scene": "astro",
+"astro": {...}} — the robot-dispatch payload
+bridge/astro_scene.py validates (a known destination, ok exactly
+true — only a successful dispatch ships — and the signature
+caption within the line budget), validated here to the same
+limits before any argv is built.
+
 It builds the setstate.py argv as a list and runs it locally — setstate.py
 is the wall's only sanctioned write path, with its turn/phase guard and
 exit codes (0 applied, 4 rejected by the guard, 3 lock timeout, 2 usage).
@@ -55,7 +62,7 @@ STATE_PATH = os.environ.get(
     os.path.join(os.path.dirname(SETSTATE), "state.json"))
 
 # The bridge may only touch scene-content keys — never bookkeeping.
-ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave", "plan", "stat"}
+ALLOWED_KEYS = {"scene", "avatar", "title", "lines", "text", "sub", "live", "wave", "plan", "stat", "astro"}
 
 # The wall's closed design budget for one scene — the same limits
 # bridge/studio_room.py validates before a scene is ever queued.
@@ -77,6 +84,13 @@ PLAN_BLOCK_KINDS = ("activity", "rain", "free", "note")
 # fits the line budget, the value is a non-negative integer.
 STAT_LABEL_MAX = 24
 STAT_SUB_MAX = 48
+
+# The astro budget — mirrors bridge/astro_scene.py (same
+# standalone duplication rule): the destination is one the room
+# can dispatch to, ok is exactly true (a failed dispatch never
+# ships a delivery card), and the caption fits the line budget.
+ASTRO_DESTINATIONS = ("studio", "kitchen")
+ASTRO_CAPTION_MAX = 48
 
 
 def _validate_scene(kv: dict) -> None:
@@ -241,6 +255,43 @@ def _validate_stat(kv: dict) -> None:
             f"the limit is {STAT_SUB_MAX}")
 
 
+def _validate_astro(kv: dict) -> None:
+    """Refuse an astro payload the design system cannot display.
+
+    Mirrors bridge/astro_scene.py's astro_problem for the payload
+    that travels here as kv["astro"] beside kv["scene"] == "astro";
+    raises ValueError naming the limit broken (apply() reports
+    rc 2)."""
+    astro = kv.get("astro")
+    if astro is None:
+        if kv.get("scene") == "astro":
+            raise ValueError("scene 'astro' requires an astro payload")
+        return
+    if kv.get("scene") != "astro":
+        raise ValueError("an astro payload requires scene 'astro'")
+    if not isinstance(astro, dict):
+        raise ValueError("astro must be an object")
+    if astro.get("kind") != "astro":
+        raise ValueError("astro kind must be 'astro'")
+    if astro.get("ok") is not True:
+        raise ValueError(
+            "astro ok must be true (only a successful dispatch ships)")
+    destination = astro.get("destination")
+    if destination not in ASTRO_DESTINATIONS:
+        raise ValueError(
+            f"astro destination must be one of "
+            f"{', '.join(ASTRO_DESTINATIONS)}; got {destination!r}")
+    caption = astro.get("caption")
+    if not isinstance(caption, str) or not caption.strip():
+        raise ValueError("astro caption must be text")
+    if "\n" in caption or "\r" in caption:
+        raise ValueError("astro caption must be a single line (no newlines)")
+    if len(caption) > ASTRO_CAPTION_MAX:
+        raise ValueError(
+            f"astro caption is {len(caption)} characters; "
+            f"the limit is {ASTRO_CAPTION_MAX}")
+
+
 def build_argv(payload: dict) -> list:
     if not isinstance(payload, dict):
         raise ValueError("payload must be a JSON object")
@@ -259,6 +310,7 @@ def build_argv(payload: dict) -> list:
     _validate_scene(kv)
     _validate_plan(kv)
     _validate_stat(kv)
+    _validate_astro(kv)
     argv = ["python3", SETSTATE, f"--turn={turn}", f"--phase={phase}"]
     if payload.get("sticky"):
         argv.append("--sticky")

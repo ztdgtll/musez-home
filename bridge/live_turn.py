@@ -82,6 +82,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, "/opt/muse/skills/custom-connector-setup/bin")
 
+from .astro_scene import astro_caption_for
 from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
 from .day_plan import compose_day_plan
 from .meta_source import (MetaAPIError, MetaSource, compose_system_prompt,
@@ -186,12 +187,13 @@ def publish_final_scene(turn_id: int, title: str, lines: list,
     """The turn's closing wall publish (module docstring): phase 5,
     NOT sticky — the composed scene, structured payload included
     when the turn produced one (a day plan ships as scene "plan"
-    with kv["plan"], a field stat as scene "stat" with kv["stat"];
-    anything else is the plain answer card). Returns wall_apply's
-    parsed reply."""
+    with kv["plan"], a field stat as scene "stat" with kv["stat"],
+    an Astro dispatch as scene "astro" with kv["astro"]; anything
+    else is the plain answer card). Returns wall_apply's parsed
+    reply."""
     kind = (scene_payload.get("kind")
             if isinstance(scene_payload, dict) else None)
-    structured = kind in ("plan", "stat")
+    structured = kind in ("plan", "stat", "astro")
     kv: dict = {"scene": kind if structured else "answer",
                 "title": title, "lines": lines, "avatar": "idle"}
     if structured:
@@ -408,11 +410,28 @@ def run_live_turn(transcript: str, turn_id: int, *,
             and scene_payload.get("kind") == "plan" else None)
     stat = (scene_payload if scene_payload is not None
             and scene_payload.get("kind") == "stat" else None)
+    astro = (scene_payload if scene_payload is not None
+             and scene_payload.get("kind") == "astro" else None)
+    # The dispatch's spoken signature (astro_scene.ASTRO_CAPTIONS):
+    # a successful call_astro appends it as the turn's FINAL
+    # spoken sentence — after composition, so the card's lines
+    # stay the model's own sentences, and before the flush below,
+    # so it rides this same dispatch. It follows the turn's
+    # language, like every bridge-composed line, and is the same
+    # text the card's caption carries; keyed on the room's
+    # dispatch record, so it is spoken exactly when a dispatch
+    # succeeded.
+    astro_caption = astro_caption_for(getattr(room, "astro", None),
+                                      lang=turn_lang)
+    if astro_caption is not None:
+        sink.say(astro_caption)
     sink.set_scene(title, lines, scene=scene_payload)
     if plan is not None:
         wall_outcome = "plan"
     elif stat is not None:
         wall_outcome = "stat"
+    elif astro is not None:
+        wall_outcome = "astro"
     elif room.wall_scenes:
         wall_outcome = "tool_scene"
     elif room.weather is not None:
@@ -562,6 +581,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
         "wall_outcome": wall_outcome,
         "plan": plan,
         "stat": stat,
+        "astro": astro,
         "wall_rejections": [r["error"] for r in room.wall_rejections],
         "wall_publish": wall_publish,
         "home_return": home_return,
