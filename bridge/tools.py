@@ -89,6 +89,24 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "call_astro",
+            "description": "Send Astro, the household robot, to a destination in the home so it can bring or take away a small item in its cargo compartment — for example bringing a bottle of water to the studio, or carrying an empty bottle from the studio to the kitchen. Astro does not vacuum; this is a delivery dispatch. Only destinations configured in the home work; an unconfigured one comes back as an error.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {
+                        "type": "string",
+                        "enum": ["studio", "kitchen"],
+                        "description": "Where Astro should go: 'studio' or 'kitchen'.",
+                    },
+                },
+                "required": ["destination"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "say",
             "description": "Speak a short text aloud in the room. Used for acknowledgements while work runs.",
             "parameters": {
@@ -129,6 +147,11 @@ class DryRoom:
     def clean_studio(self) -> dict:
         self.actions.append({"clean_studio": True})
         return {"ok": True, "status": "cleaning"}
+
+    def call_astro(self, destination: str) -> dict:
+        self.actions.append({"call_astro": destination})
+        return {"ok": True, "status": "dispatched",
+                "destination": destination}
 
 
 def _sample_weather(date: str = None) -> dict:

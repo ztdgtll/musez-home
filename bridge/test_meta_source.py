@@ -93,7 +93,7 @@ class TextTurnTests(unittest.TestCase):
         self.assertEqual(
             offered, {"set_wall_scene", "set_day_plan", "get_weather",
                       "get_hackathon_field",
-                      "clean_studio", "say", "escalate"})
+                      "clean_studio", "call_astro", "say", "escalate"})
 
 
 class SystemPromptTests(unittest.TestCase):

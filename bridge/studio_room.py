@@ -40,6 +40,16 @@ Same dispatch contract as `DryRoom` (tools.py), against the live room:
   config variable, never from the model and never hard-coded.
   Every failure (no segment configured, client unavailable, vacuum
   error) comes back as an {"ok": False} tool result.
+- `call_astro` asks the injected Astro client (bridge/
+  astro_client.py) to fire the destination's Voice Monkey trigger
+  URL, which runs the Alexa routine that sends Astro — the
+  household robot — to that destination's viewpoint to bring or
+  take away a small item. The trigger URL is configuration
+  (MUSEZ_ASTRO_URL_STUDIO / MUSEZ_ASTRO_URL_KITCHEN, read at call
+  time): it carries a secret token, so it is never a model
+  argument, never hard-coded and never logged. Every failure
+  (unknown or unconfigured destination, client unavailable,
+  trigger error) comes back as an {"ok": False} tool result.
 
 Phase discipline mirrors the listener's ladder (1 listening, 2
 processing, 3 thinking, 4 answer, 5 home): nothing the bridge does
@@ -54,6 +64,8 @@ import os
 import subprocess
 import urllib.request
 
+from .astro_client import AstroClientUnavailable
+from .astro_client import default_client as default_astro_client
 from .day_plan import plan_problem
 from .roborock_client import RoborockClientUnavailable, default_client
 
@@ -67,6 +79,17 @@ DEFAULT_FASTWX = os.path.expanduser("~/workspace/studio/fastwx.sh")
 # change when the home is remapped, so the id is configuration —
 # read at call time, never hard-coded in code.
 STUDIO_SEGMENT_ENV = "MUSEZ_STUDIO_SEGMENT"
+
+# Astro destinations -> the environment variable holding each
+# destination's Voice Monkey trigger URL. The model picks a
+# destination; WHICH trigger fires for it is configuration — the
+# URLs carry a secret token, are read at call time and are never
+# hard-coded in code. Adding a destination is one entry here plus
+# one env var (and one Alexa routine): see docs/astro-setup.md.
+ASTRO_URL_ENVS = {
+    "studio": "MUSEZ_ASTRO_URL_STUDIO",
+    "kitchen": "MUSEZ_ASTRO_URL_KITCHEN",
+}
 
 # The wall's closed design budget for one scene: an English title
 # that never wraps, at most two lines that stay inside the disc.
@@ -316,12 +339,13 @@ class StudioRoom:
 
     def __init__(self, turn: int, weather_runner=None,
                  speak=None, hourly_runner=None, roborock_client=None,
-                 field_runner=None):
+                 field_runner=None, astro_client=None):
         self.turn = turn
         self._weather = weather_runner or FastWxRunner()
         self._hourly = hourly_runner  # None = no hourly detail available
         self._speak = speak
         self._roborock = roborock_client or default_client()
+        self._astro = astro_client or default_astro_client()
         self._field = field_runner or GitHubFieldRunner()
         # Scene candidates recorded by set_wall_scene (validated, in
         # call order; the runner composes the turn's ONE final scene
@@ -476,6 +500,46 @@ class StudioRoom:
         except Exception as e:
             return {"ok": False,
                     "error": f"roborock clean failed: "
+                             f"{type(e).__name__}: {e}"}
+        if isinstance(status, dict):
+            if "ok" in status:
+                return status
+            return {"ok": True, **status}
+        return {"ok": True, "status": str(status)}
+
+    def call_astro(self, destination: str) -> dict:
+        """Send Astro, the household robot, to a destination.
+
+        Firing the destination's trigger URL presses the Voice
+        Monkey virtual trigger whose Alexa routine sends Astro to
+        that destination's viewpoint — to bring or take away a
+        small item in its cargo compartment. The URL is
+        configuration (ASTRO_URL_ENVS, read now — it carries a
+        secret token), never a model argument, and it never appears
+        in the result. Any problem — unknown destination,
+        destination not configured, client unavailable, the trigger
+        itself failing — returns {"ok": False, "error": ...}
+        instead of raising into the turn."""
+        env_name = (ASTRO_URL_ENVS.get(destination)
+                    if isinstance(destination, str) else None)
+        if env_name is None:
+            known = ", ".join(sorted(ASTRO_URL_ENVS))
+            return {"ok": False,
+                    "error": f"unknown Astro destination: "
+                             f"{destination!r} (known: {known})"}
+        url = os.environ.get(env_name, "").strip()
+        if not url:
+            return {"ok": False,
+                    "error": f"astro destination {destination!r} not "
+                             f"configured: set {env_name} to its "
+                             "Voice Monkey trigger URL"}
+        try:
+            status = self._astro.send_to(destination, url)
+        except AstroClientUnavailable as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False,
+                    "error": f"astro dispatch failed: "
                              f"{type(e).__name__}: {e}"}
         if isinstance(status, dict):
             if "ok" in status:
