@@ -148,6 +148,10 @@ the wall shows.
 
 The baseline this replaces — the pre-event chat path — measured a median transcript → first audio of 50.9 s (n = 7, 2026-10-23). Measured results live in `experiments/results/`. If a stage misses its target, the writeup says so and shows the number.
 
+## Methodology: the field count
+
+The demo's closing number — how many projects are competing in this hackathon — is not a stored figure. When the question is asked, the bridge's `get_hackathon_field` tool queries GitHub's public repository search (`q=meta-ai-developer-hackathon`) at call time and reads `total_count`; that live value is what is spoken and drawn on the wall. It is a proxy — public repositories carrying the hackathon's name — not Cerebral Valley's official entrant count, which is not public. If the lookup fails, the tool raises and the room keeps no count: no number is spoken or shown rather than an invented one.
+
 ## Repository layout
 
 - `bridge/` — the bridge code (Spark client, sentence chunker, tool dispatch).
