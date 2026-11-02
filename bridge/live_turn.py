@@ -84,7 +84,7 @@ sys.path.insert(0, "/opt/muse/skills/custom-connector-setup/bin")
 
 from .brain_switch import SWITCH_OFF_EXIT_CODE, SWITCH_OFF_MESSAGE, brain_mode
 from .meta_source import (MetaAPIError, MetaSource, compose_system_prompt,
-                          detect_language)
+                          resolve_turn_lang)
 from .studio_room import (
     SSH_CONFIG,
     SSH_HOST,
@@ -225,7 +225,8 @@ def run_live_turn(transcript: str, turn_id: int, *,
                   deadline_s: float = LIVE_DEADLINE_S,
                   publish_wait_s: float = PUBLISH_WAIT_S,
                   home_scheduler=None,
-                  home_delay_s: float = RESULT_HOLD_S) -> dict:
+                  home_delay_s: float = RESULT_HOLD_S,
+                  lang: str = None) -> dict:
     """Run one live turn end to end and return its record (also
     appended to the live results JSONL unless skip_record).
 
@@ -234,11 +235,15 @@ def run_live_turn(transcript: str, turn_id: int, *,
     sayseq log reader and the presence reader."""
     read_seq = sayseq_reader or (lambda: _ssh_cat(SAYSEQ_LOG_CMD))
 
-    # The turn's language, decided deterministically from the
-    # transcript (meta_source.detect_language): it pins the model's
-    # whole turn (in MetaSource), voices the sink's dispatches in
-    # that language, and localizes the bridge-composed card text.
-    turn_lang = detect_language(transcript)
+    # The turn's language: the caller's hint when it carries one
+    # (the queue entry's STT language — the listener transcribed in
+    # it, so it is ground truth), else decided deterministically
+    # from the transcript (meta_source.resolve_turn_lang). It pins
+    # the model's whole turn (in MetaSource), voices the sink's
+    # dispatches in that language, and localizes the bridge-
+    # composed card text.
+    turn_lang = resolve_turn_lang(transcript, lang)
+    lang_source = "stt" if lang in ("en", "es") else "detect"
 
     # The API switch, before ANY network-shaped work — the same
     # refusal contract as the mock runner, with the caller's turn id.
@@ -248,7 +253,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
             "mode": "switch_off", "source": "brain_switch",
             "brain_mode": mode, "ts": time.time(),
             "transcript": transcript, "turn_id": turn_id,
-            "turn_lang": turn_lang,
+            "turn_lang": turn_lang, "lang_source": lang_source,
             "rid": None, "playback": "skipped", "turn_error": None,
             "tool_calls": [], "ack": None, "sentences": [],
             "presence_loaded": False, "wall_publish": None,
@@ -279,7 +284,9 @@ def run_live_turn(transcript: str, turn_id: int, *,
     deadline_exceeded = False
     try:
         marks, err = _run_with_deadline(
-            lambda: run_turn(source.stream_turn(transcript, None), room, sink),
+            lambda: run_turn(source.stream_turn(transcript, None,
+                                                lang=turn_lang),
+                             room, sink),
             deadline_s)
         if err is not None:
             deadline_exceeded = True
@@ -403,6 +410,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
         "transcript": transcript,
         "turn_id": turn_id,
         "turn_lang": turn_lang,
+        "lang_source": lang_source,
         "rid": rid,
         "playback": playback,
         "turn_error": turn_error,

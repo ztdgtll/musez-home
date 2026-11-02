@@ -173,7 +173,8 @@ class FakeSource:
                           "rounds": 1, "round_marks": [],
                           "prompt_tokens": 10, "completion_tokens": 5}
 
-    def stream_turn(self, user_text, room_tools):
+    def stream_turn(self, user_text, room_tools, lang=None):
+        self.lang_seen = lang
         for event in self._events:
             yield event
 

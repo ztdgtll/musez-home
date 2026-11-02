@@ -102,9 +102,14 @@ class ProcessEntryTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
         self.ran = []
+        self.ran_lang = []
+
+        def fake_runner(text, turn, lang=None):
+            self.ran.append((text, turn))
+            self.ran_lang.append(lang)
+
         runner_patcher = mock.patch.object(
-            daemon, "run_live_turn",
-            lambda text, turn: self.ran.append((text, turn)))
+            daemon, "run_live_turn", fake_runner)
         runner_patcher.start()
         self.addCleanup(runner_patcher.stop)
 
@@ -133,8 +138,22 @@ class ProcessEntryTests(unittest.TestCase):
         daemon.process_entry(entry, mode_reader=lambda: "")
         self.assertEqual(self.ran, [("hola", 333)])
 
+    def test_entry_lang_reaches_the_runner(self):
+        # The listener records the STT language it transcribed in;
+        # the daemon hands it to the runner untouched (the runner
+        # validates it). An entry without the field passes None —
+        # the pre-field behavior.
+        entry = {"turn": 555, "text": "One more thing.",
+                 "lang": "en"}
+        daemon.process_entry(entry, mode_reader=lambda: '{"mode": "bridge"}')
+        self.assertEqual(self.ran, [("One more thing.", 555)])
+        self.assertEqual(self.ran_lang, ["en"])
+        entry = {"turn": 556, "text": "hola"}
+        daemon.process_entry(entry, mode_reader=lambda: '{"mode": "bridge"}')
+        self.assertEqual(self.ran_lang, ["en", None])
+
     def test_a_crashing_runner_never_raises(self):
-        def boom(text, turn):
+        def boom(text, turn, lang=None):
             raise RuntimeError("runner exploded")
 
         with mock.patch.object(daemon, "run_live_turn", boom):

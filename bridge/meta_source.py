@@ -174,6 +174,23 @@ def detect_language(text) -> str:
     return "es"
 
 
+def resolve_turn_lang(text, hint=None) -> str:
+    """The turn's language when the room may already KNOW it.
+
+    A valid hint ("en"/"es") wins over the detector: the studio
+    listener transcribes with the language of its STT switch, so a
+    queue entry that carries that language is ground truth the
+    transcript alone cannot beat — a short English line ("One more
+    thing. Anything I should know.") carries too few function words
+    for the detector and was pinned to Spanish live on 2026-11-01.
+    Anything else (no hint, an unrecognized value) falls back to
+    detect_language, so turns that arrive without a hint — the
+    classic path, older queue entries — behave exactly as before."""
+    if hint in ("en", "es"):
+        return hint
+    return detect_language(text)
+
+
 def turn_language_directive(lang: str) -> str:
     """The per-turn system pin stream_turn inserts ahead of the
     user's message: the detected language, stated as a rule for
@@ -420,7 +437,8 @@ class MetaSource:
 
     # -- one conversational turn ----------------------------------------
 
-    def stream_turn(self, user_text: str, room_tools: list):
+    def stream_turn(self, user_text: str, room_tools: list,
+                    lang: str = None):
         """Yield bridge events for one user turn; read tool results back.
 
         `room_tools` are the OpenAI-style schemas the room exposes (see
@@ -443,8 +461,10 @@ class MetaSource:
         # without this pin — an English request was answered in
         # Spanish in the live room (2026-11-01). The same verdict
         # drives the voice's synthesis language (bridge/studio_sink
-        # via bridge/live_turn).
-        turn_lang = detect_language(user_text)
+        # via bridge/live_turn). A caller that already knows the
+        # language (the listener's STT switch, via the queue entry)
+        # passes it as `lang` and it wins — see resolve_turn_lang.
+        turn_lang = resolve_turn_lang(user_text, lang)
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "system",

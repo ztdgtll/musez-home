@@ -14,6 +14,10 @@ pin the four surfaces the rule has to hold on:
   transport and only on an English turn, so the respond2 env
   carries RESPOND_LANG=en exactly then — a Spanish turn (and any
   plain four-argument transport) dispatches exactly as before.
+- the STT hint: when the queue entry carries the language the
+  listener transcribed in (its STT switch), that recorded language
+  wins over the detector; without one the detector rules as
+  before.
 
 Run from the repo root:  python3 -m unittest bridge.test_language -v
 """
@@ -28,7 +32,8 @@ from unittest import mock
 from .live_turn import run_live_turn
 from .meta_source import (ACK_FALLBACK, ACK_FALLBACK_EN,
                           TURN_LANGUAGE_GUIDANCE, SYSTEM_PROMPT,
-                          MetaSource, detect_language, validate_ack)
+                          MetaSource, detect_language, resolve_turn_lang,
+                          validate_ack)
 from .studio_sink import Respond2Transport, StudioSink
 from .test_live_turn import (FakeProc, FakeSource, base_kwargs,
                              make_respond_runner)
@@ -85,6 +90,43 @@ class DetectorTests(unittest.TestCase):
         self.assertEqual(
             detect_language("Che, what is the weather like today?"),
             "en")
+
+
+# The demo's closing line, as transcribed live on 2026-11-01: too
+# few function words for the detector, which pinned it to Spanish
+# and got a Spanish chat referral — while the listener had in fact
+# transcribed it in English mode. The queue entry now carries that
+# STT language and it wins (resolve_turn_lang).
+SHORT_CLOSER = "One more thing. Anything I should know."
+
+
+class SttHintTests(unittest.TestCase):
+    def test_detector_alone_misses_the_short_closer(self):
+        # The documented limit the hint exists to cover.
+        self.assertEqual(detect_language(SHORT_CLOSER), "es")
+
+    def test_hint_wins_for_the_short_closer(self):
+        self.assertEqual(resolve_turn_lang(SHORT_CLOSER, "en"), "en")
+
+    def test_spanish_hint_wins_over_english_text(self):
+        self.assertEqual(resolve_turn_lang(DEMO_LINE_1, "es"), "es")
+
+    def test_missing_or_bad_hint_falls_back_to_the_detector(self):
+        self.assertEqual(resolve_turn_lang(SHORT_CLOSER), "es")
+        self.assertEqual(resolve_turn_lang(SHORT_CLOSER, None), "es")
+        self.assertEqual(resolve_turn_lang(DEMO_LINE_1, None), "en")
+        self.assertEqual(resolve_turn_lang(DEMO_LINE_1, "fr"), "en")
+        self.assertEqual(resolve_turn_lang(DEMO_LINE_1, ""), "en")
+
+    def test_stream_turn_hint_pins_the_short_closer_in_english(self):
+        transport = FakeTransport([[content("Sure."), DONE]])
+        source = MetaSource(transport=transport)
+        run_turn(source.stream_turn(SHORT_CLOSER, TOOL_SCHEMAS,
+                                    lang="en"),
+                 DryRoom(), PrintSink())
+        messages = transport.requests[0]["messages"]
+        self.assertIn("Turn language: English",
+                      messages[1]["content"])
 
 
 class PromptPinTests(unittest.TestCase):
@@ -214,19 +256,21 @@ class SinkLangTests(unittest.TestCase):
 
 
 class LiveTurnLangTests(unittest.TestCase):
-    def _run(self, transcript, sentence):
+    def _run(self, transcript, sentence, lang=None):
         source = FakeSource([("token", sentence)])
         respond_runner, seen = make_respond_runner()
         with mock.patch.dict(os.environ, {"MUSEZ_BRAIN": "bridge"}):
             record = run_live_turn(
                 transcript, 1793999999999, source=source,
-                respond_runner=respond_runner, **base_kwargs())
-        return record, seen
+                respond_runner=respond_runner, lang=lang,
+                **base_kwargs())
+        return record, seen, source
 
     def test_english_turn_records_and_voices_english(self):
-        record, seen = self._run(DEMO_LINE_1,
-                                 "Sunny and warm this weekend.")
+        record, seen, _ = self._run(DEMO_LINE_1,
+                                    "Sunny and warm this weekend.")
         self.assertEqual(record["turn_lang"], "en")
+        self.assertEqual(record["lang_source"], "detect")
         self.assertEqual(record["sentences"],
                          ["Sunny and warm this weekend."])
         envs = [env for _, env in seen]
@@ -235,12 +279,32 @@ class LiveTurnLangTests(unittest.TestCase):
             self.assertEqual(env.get("RESPOND_LANG"), "en")
 
     def test_spanish_turn_records_spanish_and_sets_nothing(self):
-        record, seen = self._run(
+        record, seen, _ = self._run(
             "¿Cómo va a estar el clima para este fin de semana?",
             "Soleado y cálido el finde.")
         self.assertEqual(record["turn_lang"], "es")
+        self.assertEqual(record["lang_source"], "detect")
         for _, env in seen:
             self.assertNotIn("RESPOND_LANG", env)
+
+    def test_stt_hint_makes_the_short_closer_an_english_turn(self):
+        # The 2026-11-01 live failure, replayed: with the STT
+        # language on the entry, the closer is an English turn end
+        # to end — record, source pin and voice env.
+        record, seen, source = self._run(
+            SHORT_CLOSER, "Nothing pressing.", lang="en")
+        self.assertEqual(record["turn_lang"], "en")
+        self.assertEqual(record["lang_source"], "stt")
+        self.assertEqual(source.lang_seen, "en")
+        for _, env in seen:
+            self.assertEqual(env.get("RESPOND_LANG"), "en")
+
+    def test_unhinted_short_closer_still_detects_spanish(self):
+        # Compatibility: no hint, the old verdict stands.
+        record, _, source = self._run(SHORT_CLOSER, "Buena pregunta.")
+        self.assertEqual(record["turn_lang"], "es")
+        self.assertEqual(record["lang_source"], "detect")
+        self.assertEqual(source.lang_seen, "es")
 
 
 if __name__ == "__main__":
