@@ -10,6 +10,11 @@ Type=simple
 # all live there). HOME is pinned so expanduser() in the bridge
 # resolves the same paths the interactive shell uses.
 Environment=HOME=/home/hatch
+# Optional per-host secrets (e.g. the Voice Monkey trigger URL for
+# call_astro). The file lives OUTSIDE the repo with mode 600; the
+# leading dash makes it optional so the service still starts
+# without it (the tool then honestly reports itself unavailable).
+EnvironmentFile=-/home/hatch/.musez-astro.env
 # The ssh ProxyCommand helper (Tailscale tunnel to the Pi)
 # reads the proxy from the environment; the interactive
 # shell has it, a bare systemd service does not.
