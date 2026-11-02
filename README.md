@@ -32,7 +32,7 @@ You say "Hey Muse" in the studio. The room listens, transcribes locally, and sen
 
 ## The room it runs in
 
-MuseZ Home plugs into a personal studio its builder has been developing as a long-running project: a Raspberry Pi 5 running a projected ambient wall, a local wake-word listener ("Hey Muse") with a USB microphone array and a room speaker, and a speech pipeline with a watchdog that verifies spoken replies actually play. That system is the stage — a body that already existed. What this event adds is the brain: a dedicated, measured bridge from the room to Meta's Muse models.
+MuseZ Home plugs into a personal studio its builder has been developing as a long-running project: a Raspberry Pi 5 running a projected ambient wall, a local wake-word listener ("Hey Muse") with a USB microphone array and a room speaker, and a speech pipeline with a watchdog that verifies spoken replies actually play. That system is the stage — a body that already existed. What this event adds is the brain: a dedicated, measured bridge from the room to Meta's Muse models. The room's own story — four bodies, two layers of light, and the design language the stage imposes — is told in [`docs/the-room.md`](docs/the-room.md).
 
 ## Provenance: what was built here, what already existed
 
