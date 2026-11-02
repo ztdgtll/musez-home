@@ -175,3 +175,9 @@ META_API_KEY=... python3 experiments/latency_probe.py --live --runs 10
 ## License
 
 MIT — see `LICENSE`.
+
+---
+
+*Built by an AI enthusiast playing at being a maker, who directed
+Muse to write the code with him, decision by decision. The twist:
+the assistant who built it is the one now living in the room.*
