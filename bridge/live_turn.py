@@ -418,7 +418,8 @@ def run_live_turn(transcript: str, turn_id: int, *,
     # stay the model's own sentences, and before the flush below,
     # so it rides this same dispatch. It follows the turn's
     # language, like every bridge-composed line, and is the same
-    # text the card's caption carries; keyed on the room's
+    # line is voice-only (never printed on the card); keyed
+    # on the room's
     # dispatch record, so it is spoken exactly when a dispatch
     # succeeded.
     astro_caption = astro_caption_for(getattr(room, "astro", None),

@@ -87,10 +87,10 @@ STAT_SUB_MAX = 48
 
 # The astro budget — mirrors bridge/astro_scene.py (same
 # standalone duplication rule): the destination is one the room
-# can dispatch to, ok is exactly true (a failed dispatch never
-# ships a delivery card), and the caption fits the line budget.
+# can dispatch to, and ok is exactly true (a failed dispatch
+# never ships a delivery card). The dispatch's signature line
+# is voice-only and never travels in this payload.
 ASTRO_DESTINATIONS = ("studio", "kitchen")
-ASTRO_CAPTION_MAX = 48
 
 
 def _validate_scene(kv: dict) -> None:
@@ -281,15 +281,7 @@ def _validate_astro(kv: dict) -> None:
         raise ValueError(
             f"astro destination must be one of "
             f"{', '.join(ASTRO_DESTINATIONS)}; got {destination!r}")
-    caption = astro.get("caption")
-    if not isinstance(caption, str) or not caption.strip():
-        raise ValueError("astro caption must be text")
-    if "\n" in caption or "\r" in caption:
-        raise ValueError("astro caption must be a single line (no newlines)")
-    if len(caption) > ASTRO_CAPTION_MAX:
-        raise ValueError(
-            f"astro caption is {len(caption)} characters; "
-            f"the limit is {ASTRO_CAPTION_MAX}")
+
 
 
 def build_argv(payload: dict) -> list:

@@ -8,8 +8,7 @@ drawing of the robot with its cargo, and the reply's own lines on
 the avatar's anchored line. The renderer draws the "astro" kind
 from bridge/wall_apply.py's payload shape:
 
-    {"kind": "astro", "destination": "studio", "ok": true,
-     "caption": "The delivery guy doesn't take tips."}
+    {"kind": "astro", "destination": "studio", "ok": true}
 
 Contract boundary — the same one bridge/stat_scene.py lives
 under: this module validates the payload and the bridge ships it
@@ -22,11 +21,13 @@ never from the model's wording, never hard-coded to a request.
 The card's title is title-class, so it is English like every
 scene title; its lines are the model's own reply sentences for
 the turn, exactly as a plain scene's lines are (see
-studio_turn.compose_scene). The caption is the dispatch's
+studio_turn.compose_scene). The dispatch also carries a
 standing signature line: a bridge-composed constant that follows
-the turn's language like every bridge-composed line — it is
-spoken as the turn's final sentence and printed under the card's
-drawing.
+the turn's language like every bridge-composed line, spoken as
+the turn's final sentence. It lives ONLY in the audio — printed
+under the card's drawing it crowded the reply's own lines, so
+Javier cut it from the wall (2026-11-02); the card is title,
+drawing and the reply's lines.
 """
 
 from __future__ import annotations
@@ -47,20 +48,15 @@ ASTRO_DESTINATIONS = ("studio", "kitchen")
 # The dispatch's standing signature line. It is SPOKEN as the
 # successful turn's final sentence (appended by the runners at
 # flush time, after the model's own sentences, in the same
-# dispatch — never a separate turn) and the renderer prints it
-# as the card's caption. A personality signature, not turn
-# content — the garage wall's standing jokes are the house
-# precedent — but bridge-composed, so it follows the TURN's
-# language like every bridge-composed line.
+# dispatch — never a separate turn). A personality signature,
+# not turn content — the garage wall's standing jokes are the
+# house precedent — but bridge-composed, so it follows the
+# TURN's language like every bridge-composed line. Voice only:
+# it is NOT part of the wall payload (see the module docstring).
 ASTRO_CAPTIONS = {
     "en": "The delivery guy doesn't take tips.",
     "es": "El repartidor no acepta propinas.",
 }
-
-# The caption rides under the drawing as a line-class element:
-# it fits the wall's line budget (bridge/studio_room.py's
-# SCENE_LINE_MAX, enforced again Pi-side by bridge/wall_apply.py).
-ASTRO_CAPTION_MAX = 48
 
 
 def astro_problem(astro) -> str | None:
@@ -78,14 +74,6 @@ def astro_problem(astro) -> str | None:
     if destination not in ASTRO_DESTINATIONS:
         return (f"astro destination must be one of "
                 f"{', '.join(ASTRO_DESTINATIONS)}; got {destination!r}")
-    caption = astro.get("caption")
-    if not isinstance(caption, str) or not caption.strip():
-        return "astro caption must be text"
-    if "\n" in caption or "\r" in caption:
-        return "astro caption must be a single line (no newlines)"
-    if len(caption) > ASTRO_CAPTION_MAX:
-        return (f"astro caption is {len(caption)} characters; "
-                f"the limit is {ASTRO_CAPTION_MAX}")
     return None
 
 
@@ -95,14 +83,14 @@ def compose_astro_dispatch(dispatch, lang: str = "es") -> dict | None:
     back to the plain card, and a failed dispatch (room.astro stays
     None) never reaches here at all. The destination is the one
     THIS turn's tool call named: never cached, never hard-coded.
-    The caption follows the turn's language (`lang`), like every
-    bridge-composed line."""
+    The payload does not vary with `lang` (the parameter stays
+    for call-site symmetry): the language-dependent piece of a
+    dispatch is its spoken signature, astro_caption_for below."""
     if not isinstance(dispatch, dict):
         return None
     payload = {"kind": ASTRO_KIND,
                "destination": dispatch.get("destination"),
-               "ok": dispatch.get("ok"),
-               "caption": ASTRO_CAPTIONS.get(lang, ASTRO_CAPTIONS["es"])}
+               "ok": dispatch.get("ok")}
     return None if astro_problem(payload) is not None else payload
 
 
@@ -110,7 +98,9 @@ def astro_caption_for(dispatch, lang: str = "es") -> str | None:
     """The spoken signature for a recorded dispatch, in the turn's
     language, or None when the record is not a successful
     dispatch — the line is spoken exactly where the card ships,
-    and nowhere else. The same text the card's caption carries:
-    voice and wall sign the dispatch with one line."""
-    payload = compose_astro_dispatch(dispatch, lang=lang)
-    return None if payload is None else payload["caption"]
+    and nowhere else. Voice only: it is not printed on the card
+    (Javier's call, 2026-11-02 — under the drawing it crowded
+    the reply's own lines)."""
+    if compose_astro_dispatch(dispatch) is None:
+        return None
+    return ASTRO_CAPTIONS.get(lang, ASTRO_CAPTIONS["es"])

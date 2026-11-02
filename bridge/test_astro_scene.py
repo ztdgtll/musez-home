@@ -15,7 +15,7 @@ composes the field stat from the count. What is pinned here:
 - a successful dispatch appends the standing signature line
   (astro_scene.ASTRO_CAPTIONS) as the turn's FINAL spoken
   sentence, in the same dispatch and in the turn's language —
-  the same text the card's caption carries; no success, no line;
+  voice only, never printed on the card; no success, no line;
 - the Pi-side gate (wall_apply) builds an argv only for a
   well-formed payload beside scene "astro" and refuses the rest
   before any write.
@@ -64,21 +64,21 @@ class AstroSceneTests(unittest.TestCase):
         payload = compose_astro_dispatch(
             {"destination": "studio", "ok": True}, lang="en")
         self.assertEqual(payload, {
-            "kind": "astro", "destination": "studio", "ok": True,
-            "caption": "The delivery guy doesn't take tips."})
+            "kind": "astro", "destination": "studio", "ok": True})
         self.assertIsNone(astro_problem(payload))
 
-    def test_caption_follows_the_turn_language(self):
+    def test_payload_does_not_vary_with_language(self):
+        # The wall payload is language-independent: the piece of
+        # a dispatch that follows the turn's language is its
+        # SPOKEN signature (AstroCaptionTests), never the card.
         dispatch = {"destination": "studio", "ok": True}
-        self.assertEqual(
-            compose_astro_dispatch(dispatch, lang="en")["caption"],
-            "The delivery guy doesn't take tips.")
-        self.assertEqual(
-            compose_astro_dispatch(dispatch, lang="es")["caption"],
-            "El repartidor no acepta propinas.")
-        # The bridge default (no language decided) is Spanish.
-        self.assertEqual(compose_astro_dispatch(dispatch)["caption"],
-                         "El repartidor no acepta propinas.")
+        expected = {"kind": "astro", "destination": "studio",
+                    "ok": True}
+        self.assertEqual(compose_astro_dispatch(dispatch, lang="en"),
+                         expected)
+        self.assertEqual(compose_astro_dispatch(dispatch, lang="es"),
+                         expected)
+        self.assertEqual(compose_astro_dispatch(dispatch), expected)
 
     def test_the_kitchen_dispatch_composes_too(self):
         payload = compose_astro_dispatch(
@@ -96,16 +96,11 @@ class AstroSceneTests(unittest.TestCase):
                               msg=f"dispatch={bad!r}")
 
     def test_problem_names_the_limit_broken(self):
-        good = {"kind": "astro", "destination": "studio", "ok": True,
-                "caption": "The delivery guy doesn't take tips."}
+        good = {"kind": "astro", "destination": "studio", "ok": True}
         self.assertIn("kind", astro_problem({**good, "kind": "stat"}))
         self.assertIn("ok", astro_problem({**good, "ok": False}))
         self.assertIn("destination",
                       astro_problem({**good, "destination": "garage"}))
-        self.assertIn("caption",
-                      astro_problem({**good, "caption": "X" * 49}))
-        self.assertIn("48",
-                      astro_problem({**good, "caption": "X" * 49}))
         self.assertIn("object", astro_problem("astro"))
 
     def test_title_is_the_english_card_title(self):
@@ -164,17 +159,16 @@ class FinalSceneAstroTests(unittest.TestCase):
         title, lines, scene = compose_final_scene(
             "", room_dispatched(), sink, lang="en")
         self.assertEqual(scene, {
-            "kind": "astro", "destination": "studio", "ok": True,
-            "caption": "The delivery guy doesn't take tips."})
+            "kind": "astro", "destination": "studio", "ok": True})
         self.assertEqual(title, "SPECIAL DELIVERY")
         self.assertEqual(lines, ["Astro is on his way with your water."])
 
-    def test_spanish_turn_ships_the_spanish_caption(self):
+    def test_spanish_turn_ships_the_same_payload(self):
         sink = self.sink("Astro ya va en camino con tu agua.")
         title, lines, scene = compose_final_scene(
             "", room_dispatched(), sink, lang="es")
-        self.assertEqual(scene["caption"],
-                         "El repartidor no acepta propinas.")
+        self.assertEqual(scene, {
+            "kind": "astro", "destination": "studio", "ok": True})
         self.assertEqual(title, "SPECIAL DELIVERY")
 
     def test_astro_outranks_the_models_own_scene(self):
@@ -231,8 +225,8 @@ class WallApplyAstroTests(unittest.TestCase):
     before any write — the same discipline the stat payload
     lives under."""
 
-    GOOD_ASTRO = {"kind": "astro", "destination": "studio", "ok": True,
-                  "caption": "The delivery guy doesn't take tips."}
+    GOOD_ASTRO = {"kind": "astro", "destination": "studio",
+                  "ok": True}
 
     def payload(self, kv):
         return {"turn": 1, "phase": 5, "kv": kv}
@@ -270,14 +264,6 @@ class WallApplyAstroTests(unittest.TestCase):
         self.assertIn("ok", str(ctx.exception))
         self.assertEqual(ran, [])
 
-    def test_overlong_caption_is_refused_before_any_write(self):
-        with self.assertRaises(ValueError) as ctx:
-            wall_apply.build_argv(self.payload(
-                {"scene": "astro",
-                 "astro": {**self.GOOD_ASTRO, "caption": "X" * 49}}))
-        self.assertIn("48", str(ctx.exception))
-
-
 class AstroLiveTurnTests(unittest.TestCase):
     """The full live runner with a scripted model: an astro turn
     publishes the astro scene AND speaks the signature line last;
@@ -301,14 +287,13 @@ class AstroLiveTurnTests(unittest.TestCase):
                 **base_kwargs(wall_runner=wall_runner))
         return record, wall_calls
 
-    def test_success_publishes_the_card_and_speaks_the_caption_last(self):
+    def test_success_publishes_the_card_and_speaks_the_signature_last(self):
         record, wall_calls = self.run_astro_turn(
             FakeAstroClient(), "Hey Muse, send Astro with my water.",
             "Astro is on his way with your water.", lang="en")
         self.assertEqual(record["wall_outcome"], "astro")
         self.assertEqual(record["astro"], {
-            "kind": "astro", "destination": "studio", "ok": True,
-            "caption": "The delivery guy doesn't take tips."})
+            "kind": "astro", "destination": "studio", "ok": True})
         self.assertEqual(record["wall_publish"],
                          {"applied": True, "rc": 0})
         # The model's own sentence first, the signature last —
@@ -320,25 +305,25 @@ class AstroLiveTurnTests(unittest.TestCase):
         self.assertEqual(kv["scene"], "astro")
         self.assertEqual(kv["title"], "SPECIAL DELIVERY")
         self.assertEqual(kv["astro"], record["astro"])
-        # The card's lines are the model's own — the signature is
-        # spoken and rendered as the caption, never a card line.
+        # The card's lines are the model's own — the signature
+        # is spoken only, never a card line.
         self.assertEqual(kv["lines"],
                          ["Astro is on his way with your water."])
 
-    def test_spanish_turn_speaks_and_ships_the_spanish_caption(self):
+    def test_spanish_turn_speaks_the_spanish_signature(self):
         record, wall_calls = self.run_astro_turn(
             FakeAstroClient(), "Che Muse, mandá a Astro con mi agua.",
             "Astro ya va en camino con tu agua.", lang="es")
         self.assertEqual(record["wall_outcome"], "astro")
-        self.assertEqual(record["astro"]["caption"],
-                         "El repartidor no acepta propinas.")
+        self.assertEqual(record["astro"], {
+            "kind": "astro", "destination": "studio", "ok": True})
         self.assertEqual(record["sentences"],
                          ["Astro ya va en camino con tu agua.",
                           "El repartidor no acepta propinas."])
         self.assertEqual(wall_calls[0]["kv"]["title"],
                          "SPECIAL DELIVERY")
 
-    def test_failed_dispatch_publishes_no_card_and_speaks_no_caption(self):
+    def test_failed_dispatch_publishes_no_card_and_speaks_no_signature(self):
         client = FakeAstroClient(
             result={"ok": False, "error": "routine did not run"})
         record, wall_calls = self.run_astro_turn(
