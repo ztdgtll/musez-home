@@ -8,7 +8,7 @@ API and does not vacuum; the dispatch chain the bridge uses is:
 
 ```
 bridge ──HTTPS GET──▶ Voice Monkey Routine Trigger (virtual device)
-        ──▶ Alexa routine ──Custom action──▶ "Astro, go to <viewpoint>"
+        ──▶ Alexa routine ──Custom action──▶ "Go to <room/viewpoint>"
         ──▶ Astro navigates to the viewpoint
 ```
 
@@ -69,19 +69,33 @@ For each destination, in the Alexa app:
 
 1. **More → Routines → +** (new routine), name it e.g.
    `MuseZ — Astro to the studio`.
-2. **When this happens → Smart Home** → pick the Voice Monkey
-   Routine Trigger device from step 1 (`astro-studio`).
-3. **Add action → Custom** and type exactly what you would say:
+2. **When this happens → Smart Home** → **Alexa Voice Monkey v3**
+   → **VM Routines** → pick the event for the trigger device from
+   step 1 (`astro-studio`). (Voice Monkey triggers are event
+   sources, not ordinary smart-home devices — they only appear
+   under that VM Routines list, not in the device list.)
+3. **Add action → Custom** and type the command **without**
+   Astro's name:
 
    ```
-   Astro, go to studio
+   Go to Study Room
    ```
 
-   (the viewpoint name from step 2; if you named the routine to
-   run on a specific device, choose Astro / the household's Alexa
-   as the device the custom action runs from, per the app flow).
-4. Save. Repeat with the kitchen trigger and
-   `Astro, go to kitchen`.
+   (the destination exactly as Astro's map names it — room or
+   viewpoint). Set **Hear Alexa from** to **Astro** itself.
+
+   > **Verified live, 2026-11-02 — read this before "fixing" the
+   > text.** The intuitive version, `Astro, go to Study Room`,
+   > silently does nothing: the routine fires (it shows in
+   > Routines → Activity) but Astro never moves — with the output
+   > device set to Astro *or* to an Echo. Dropping the `Astro,`
+   > prefix, with the output device on Astro, is the combination
+   > that works: Astro left the living room and navigated to the
+   > study on the first try. Custom actions are delivered to the
+   > device as the command *after* its wake word, so the name
+   > must not be in the text.
+4. Save. Repeat with the kitchen trigger and `Go to Kitchen`
+   the same way.
 
 Test each routine once by pressing the Voice Monkey device's test
 trigger (or by opening its trigger URL in a browser where you are
