@@ -99,6 +99,10 @@ sequenceDiagram
     R->>R: turn record appended under T (stage timings, wall outcome, playback)
 ```
 
+### The presence file
+
+The room knows whose room it is because of a small, hand-curated presence file that lives only on the Pi: a distilled extract of the user's memory — tastes, routines, preferences — plus the assistant's persona notes. The live runner reads it before the model source is built and appends it to the system prompt; every turn record states whether it was loaded (`presence_loaded`), and a failed read degrades to the bare prompt, openly. Its contents are never committed to this repository: the mechanism is public, the person's details stay in the room. It is why "plan my Saturday" produces *his* Saturday — quiet breakfast at home, groceries at noon, the pool if the weather holds — instead of a generic one.
+
 ### The room adapter boundary
 
 The bridge core — turn loop, sentence chunker, model source — talks to the room through two narrow interfaces, and everything studio-specific lives behind them:
