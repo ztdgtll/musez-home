@@ -244,9 +244,14 @@ def process_entry(entry: dict, mode_reader=None, now: float = None) -> None:
         # The entry's STT language rides along when the listener
         # recorded one (entries without it — older lines, hand-fed
         # lines — pass None and the runner detects from the text,
-        # exactly as before this field existed).
+        # exactly as before this field existed). So does the
+        # "filler" fact: the listener's pre-recorded early ack, in
+        # the turn's language, already sounded for this turn, and
+        # the runner suppresses the bridge's own ack for it —
+        # exactly one acknowledgement per turn.
         run_live_turn(entry["text"], entry["turn"],
-                      lang=entry.get("lang"))
+                      lang=entry.get("lang"),
+                      ack_prefilled=bool(entry.get("filler")))
     except Exception as e:
         log(f"turn {entry['turn']}: runner crashed: "
             f"{type(e).__name__}: {e}")

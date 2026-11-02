@@ -103,10 +103,12 @@ class ProcessEntryTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ran = []
         self.ran_lang = []
+        self.ran_filled = []
 
-        def fake_runner(text, turn, lang=None):
+        def fake_runner(text, turn, lang=None, ack_prefilled=False):
             self.ran.append((text, turn))
             self.ran_lang.append(lang)
+            self.ran_filled.append(ack_prefilled)
 
         runner_patcher = mock.patch.object(
             daemon, "run_live_turn", fake_runner)
@@ -152,8 +154,21 @@ class ProcessEntryTests(unittest.TestCase):
         daemon.process_entry(entry, mode_reader=lambda: '{"mode": "bridge"}')
         self.assertEqual(self.ran_lang, ["en", None])
 
+    def test_entry_filler_fact_reaches_the_runner(self):
+        # The listener's early ack already sounded for this turn:
+        # the daemon hands the fact to the runner so the bridge
+        # suppresses its own ack. An entry without it (older lines,
+        # hand-fed lines) passes False — the bridge ack stays.
+        entry = {"turn": 557, "text": "Plan my Saturday.",
+                 "lang": "en", "filler": True}
+        daemon.process_entry(entry, mode_reader=lambda: '{"mode": "bridge"}')
+        self.assertEqual(self.ran_filled, [True])
+        entry = {"turn": 558, "text": "hola"}
+        daemon.process_entry(entry, mode_reader=lambda: '{"mode": "bridge"}')
+        self.assertEqual(self.ran_filled, [True, False])
+
     def test_a_crashing_runner_never_raises(self):
-        def boom(text, turn, lang=None):
+        def boom(text, turn, lang=None, ack_prefilled=False):
             raise RuntimeError("runner exploded")
 
         with mock.patch.object(daemon, "run_live_turn", boom):

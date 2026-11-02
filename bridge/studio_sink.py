@@ -186,11 +186,23 @@ class StudioSink:
     """
 
     def __init__(self, transport, turn=None, title: str = "", lines=(),
-                 lang: str = "es"):
+                 lang: str = "es", ack_external: bool = False):
         self.transport = transport
         self.turn = turn
         self.title = title
         self.lines = list(lines)
+        # ack_external: this turn's ONE acknowledgement already
+        # sounded in the room before the turn reached the bridge —
+        # the listener's pre-recorded filler, in the turn's language,
+        # fired as the turn was queued (the queue entry carried the
+        # fact; bridge/live_turn wires it here). announce() then
+        # records the ack as discharged externally and dispatches
+        # nothing: exactly one ack per turn, and the early one is
+        # the only one that can be early — a synthesized ack takes
+        # ~12 s of render+ship before it can sound (room evidence
+        # 2026-11-01: the plan's ack, dispatched ~5 s into the
+        # bridge's work, was heard 31 s after the turn was queued).
+        self.ack_external = ack_external
         # The turn's language (meta_source.detect_language, decided
         # by the runner): "es" — the default — dispatches exactly
         # as before this parameter existed; "en" asks a lang-aware
@@ -251,6 +263,10 @@ class StudioSink:
         A launch-unknown ack is NOT retried — it may already be
         playing."""
         if self.ack is not None:
+            return self.ack
+        if self.ack_external:
+            self.ack = {"ok": True, "text": text,
+                        "external": "listener_filler"}
             return self.ack
         self.events.append((time.perf_counter(), "ack_dispatch"))
         try:
