@@ -423,5 +423,32 @@ class PlanRoutingTests(unittest.TestCase):
         self.assertIsNone(record["plan_fallback"])
 
 
+class PollResilienceTests(unittest.TestCase):
+    def test_a_dead_poll_reader_cannot_kill_the_turn(self):
+        # Room evidence 2026-11-01 (turn 1793588978983): the
+        # answer had already played when the closing phase went
+        # on polling over a degraded ssh route — a poll read is
+        # no news, never a fatal error.
+        def api_transport(url, body, headers):
+            return iter([sse_content("Hola, todo bien."), DONE])
+
+        respond_runner, _ = make_respond_runner()
+        sink = make_sink(respond_runner)
+
+        def dead_reader():
+            raise RuntimeError("ssh route down")
+
+        record = run_live_turn(
+            "¿qué clima hace?", TURN,
+            api_transport=api_transport, sink=sink,
+            **base_kwargs(sayseq_reader=dead_reader,
+                          gate_reader=dead_reader,
+                          publish_wait_s=0.3))
+        self.assertEqual(record["playback"], "not_observed")
+        self.assertIsNone(record["turn_error"])
+        self.assertEqual(record["wall_publish"],
+                         {"skipped": "last segment play not observed"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -107,7 +107,7 @@ def _truncate(text: str, limit: int = 90) -> str:
 
 
 def compose_scene(name: str, room: StudioRoom, sink: StudioSink,
-                  lang: str = "es"):
+                  lang: str = "es", transcript: str = ""):
     """The answer's ONE wall scene, composed at flush time: the
     turn's own scene candidate wins; a weather result composes from
     the real data; otherwise the first spoken sentences themselves
@@ -125,7 +125,18 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink,
     turn stays behind in Spanish."""
     if room.wall_scenes:
         last = room.wall_scenes[-1]
-        return last["title"], last["lines"]
+        title, lines = last["title"], last["lines"]
+        if room.weather is not None and re.search(
+                r"weather|clima", title or "", re.IGNORECASE):
+            # The model's scene title is free text and can copy a
+            # word the recognizer deformed («Wicked Weather» from
+            # "weekend", room evidence 2026-11-01). A weather
+            # card's title is canonical — the forecast's scope,
+            # never the transcript's wording.
+            title = ("Weekend Weather" if re.search(
+                r"weekend|fin de semana", transcript or "",
+                re.IGNORECASE) else "Tamarac weather")
+        return title, lines
     if room.weather is not None:
         w = room.weather
         if lang == "en":
@@ -162,7 +173,7 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink,
 
 
 def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink,
-                        lang: str = "es"):
+                        lang: str = "es", transcript: str = ""):
     """The turn's final scene as (title, lines, scene): a validated
     day plan outranks every card composition — the flush then ships
     the plan payload as the dispatch's structured scene, with a card
@@ -190,13 +201,15 @@ def compose_final_scene(name: str, room: StudioRoom, sink: StudioSink,
         if stat is not None:
             title, lines = field_stat_card(stat, lang=lang)
             return title, lines, stat
-    title, lines = compose_scene(name, room, sink, lang=lang)
+    title, lines = compose_scene(name, room, sink, lang=lang,
+                                 transcript=transcript)
     return title, lines, None
 
 
-def _ssh_cat(command: str, runner=None) -> str:
+def _ssh_cat(command: str, runner=None, timeout_s: float = 30) -> str:
     run = runner or (
-        lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        lambda argv: subprocess.run(argv, capture_output=True, text=True,
+                                    timeout=timeout_s)
     )
     proc = run(["ssh", "-F", SSH_CONFIG, SSH_HOST, command])
     return proc.stdout or ""

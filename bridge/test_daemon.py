@@ -302,5 +302,33 @@ class IdCursorTests(unittest.TestCase):
             daemon._prune_done_ids([1, 2, 3], {1}), [1, 2, 3])
 
 
+class HeartbeatTests(unittest.TestCase):
+    def test_heartbeat_refreshes_ts_and_keeps_the_cursor(self):
+        # Room evidence 2026-11-01: the heartbeat only ticked
+        # between queue polls, so a working daemon inside a long
+        # turn looked wedged (197 s-old ts) and got restarted
+        # mid-turn. The side thread must refresh ts on its own
+        # and carry the saved cursor verbatim.
+        import threading
+        import time as _time
+
+        with tempfile.TemporaryDirectory() as td:
+            state_dir = Path(td)
+            state_path = state_dir / "state.json"
+            state_path.write_text(json.dumps(
+                {"done": 2, "done_ids": [111, 222], "ts": 1.0}))
+            with mock.patch.object(daemon, "STATE_DIR", state_dir), \
+                    mock.patch.object(daemon, "STATE_PATH", state_path), \
+                    mock.patch.object(daemon, "HEARTBEAT_S", 0.05):
+                th = threading.Thread(target=daemon._heartbeat_loop,
+                                      daemon=True)
+                th.start()
+                _time.sleep(0.3)
+            state = json.loads(state_path.read_text())
+        self.assertEqual(state["done_ids"], [111, 222])
+        self.assertEqual(state["done"], 2)
+        self.assertGreater(state["ts"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

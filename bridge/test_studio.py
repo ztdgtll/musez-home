@@ -395,6 +395,53 @@ class SingleFinalSceneTests(unittest.TestCase):
         self.assertEqual(lines[0], "Tamarac · lluvia fuerte")
         self.assertIn("Lluvia 44%", lines[1])
 
+    def test_weather_card_title_is_canonical_not_transcript_copied(self):
+        # Room evidence 2026-11-01: the recognizer deformed
+        # "weekend" into "wicked" and the model's own scene title
+        # copied the deformation onto the wall («Wicked Weather»).
+        room = StudioRoom(99, weather_runner=lambda: self.DAILY)
+        sink, calls = self.make_sink()
+        run_turn(iter([
+            ("tool_call", "get_weather", {}),
+            ("tool_call", "set_wall_scene",
+             {"title": "Wicked Weather", "line1": "Tamarac · rain",
+              "line2": "Rain 90%"}),
+            ("token", "It's up on the wall."),
+        ]), room, sink)
+        title, lines = compose_scene(
+            "", room, sink, lang="en",
+            transcript="Put the weekend weather on the wall.")
+        self.assertEqual(title, "Weekend Weather")
+        self.assertEqual(lines, ["Tamarac · rain", "Rain 90%"])
+
+    def test_weather_card_title_defaults_to_tamarac_off_weekend(self):
+        room = StudioRoom(99, weather_runner=lambda: self.DAILY)
+        sink, calls = self.make_sink()
+        run_turn(iter([
+            ("tool_call", "get_weather", {}),
+            ("tool_call", "set_wall_scene",
+             {"title": "Wicked Weather", "line1": "x", "line2": "y"}),
+            ("token", "Done."),
+        ]), room, sink)
+        title, _ = compose_scene(
+            "", room, sink, lang="en",
+            transcript="Put the weather on the wall.")
+        self.assertEqual(title, "Tamarac weather")
+
+    def test_non_weather_scene_title_is_never_rewritten(self):
+        room = StudioRoom(99, weather_runner=lambda: self.DAILY)
+        sink, calls = self.make_sink()
+        run_turn(iter([
+            ("tool_call", "get_weather", {}),
+            ("tool_call", "set_wall_scene",
+             {"title": "My Mixtape", "line1": "x", "line2": "y"}),
+            ("token", "Done."),
+        ]), room, sink)
+        title, _ = compose_scene(
+            "", room, sink, lang="en",
+            transcript="Put the weekend weather on the wall.")
+        self.assertEqual(title, "My Mixtape")
+
     def test_turn_without_a_tool_scene_derives_lines_from_its_sentences(self):
         room = StudioRoom(99, weather_runner=lambda: self.fail("no weather"))
         sink, calls = self.make_sink()

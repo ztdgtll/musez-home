@@ -287,7 +287,20 @@ def run_live_turn(transcript: str, turn_id: int, *,
     Every external surface is injectable for tests: the API
     transport, the respond2 runner, the wall-apply runner, the
     sayseq log reader and the presence reader."""
-    read_seq = sayseq_reader or (lambda: _ssh_cat(SAYSEQ_LOG_CMD))
+    read_seq = sayseq_reader or (
+        lambda: _ssh_cat(SAYSEQ_LOG_CMD, timeout_s=12))
+
+    def _poll_read(fn):
+        """One playback-poll read that cannot kill the turn. On
+        the room's two-hop ssh route a single stalled read used to
+        raise out of the poll loop and cost the turn its closing
+        publish and its record — after the answer had already
+        played (2026-11-01, turn 1793588978983). A failed read is
+        no news, not a failure: the loop polls on to its deadline."""
+        try:
+            return fn()
+        except Exception:
+            return ""
 
     # The turn's language: the caller's hint when it carries one
     # (the queue entry's STT language — the listener transcribed in
@@ -367,6 +380,12 @@ def run_live_turn(transcript: str, turn_id: int, *,
             deadline_exceeded = True
     except Exception as e:
         turn_error = f"{type(e).__name__}: {e}"
+    # Phase marks in the journal as the turn crosses them: a turn
+    # whose only output was its final summary left a multi-minute
+    # silence that read exactly like a hang (2026-11-01).
+    print(f"live turn {turn_id}: model phase "
+          f"{(time.perf_counter() - p_start) * 1000:.0f} ms "
+          f"(error: {turn_error})", flush=True)
     # The composition backstop: a plan turn that reaches this
     # point with NO plan on the room — the model never built one,
     # or its thread was abandoned past the grace — must not
@@ -384,7 +403,7 @@ def run_live_turn(transcript: str, turn_id: int, *,
             room.plan_scenes.append(composed)
             plan_fallback = "composed_from_weather"
     title, lines, scene_payload = compose_final_scene(
-        "", room, sink, lang=turn_lang)
+        "", room, sink, lang=turn_lang, transcript=transcript)
     plan = (scene_payload if scene_payload is not None
             and scene_payload.get("kind") == "plan" else None)
     stat = (scene_payload if scene_payload is not None
@@ -418,6 +437,9 @@ def run_live_turn(transcript: str, turn_id: int, *,
     # once the LAST segment has played. Polling stops early when
     # the gate suppressed playback outright.
     rid = receipt.get("rid") if receipt else None
+    print(f"live turn {turn_id}: flushed at "
+          f"{(time.perf_counter() - p_start) * 1000:.0f} ms "
+          f"(rid: {rid})", flush=True)
     playback = "no_launch"
     t_first_audio_ms = None
     wall_publish = None
@@ -432,13 +454,15 @@ def run_live_turn(transcript: str, turn_id: int, *,
         # like the mock runner's identical check.
         gate_cmd = (f"grep {rid} {PLAYGATE_LOG} | tail -n 3"
                     if re.match(r"^[0-9][0-9-]*$", rid) else "true")
-        read_gate = gate_reader or (lambda: _ssh_cat(gate_cmd))
+        read_gate = gate_reader or (
+            lambda: _ssh_cat(gate_cmd, timeout_s=12))
         last_idx = max(0, len(sink.sentences) - 1)
         wait_deadline = time.monotonic() + publish_wait_s
         published = False
         while True:
-            seq_text = read_seq()
-            status = playback_status(rid, seq_text, read_gate())
+            seq_text = _poll_read(read_seq)
+            status = playback_status(rid, seq_text,
+                                     _poll_read(read_gate))
             if status != "pending":
                 playback = status
             if playback == "played" and t_first_audio_ms is None:
@@ -456,6 +480,9 @@ def run_live_turn(transcript: str, turn_id: int, *,
                 wall_publish = publish_final_scene(
                     turn_id, title, lines, scene_payload, wall_runner=wall_runner)
                 published = True
+                print(f"live turn {turn_id}: scene published at "
+                      f"{(time.perf_counter() - p_start) * 1000:.0f} ms",
+                      flush=True)
             if _played_done(seq_text, rid, last_idx):
                 if playback == "pending":
                     playback = "played"

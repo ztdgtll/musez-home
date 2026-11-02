@@ -50,6 +50,7 @@ import fcntl
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -63,6 +64,16 @@ STATE_PATH = STATE_DIR / "state.json"
 LOCK_PATH = STATE_DIR / "daemon.lock"
 POLL_S = 0.7
 STALE_AFTER_S = 90.0
+# The heartbeat thread refreshes the state file's ts this often,
+# even mid-turn: the main loop only saves state between polls, so
+# without it a long turn (model deadline + plan grace + publish
+# waits can lawfully pass two minutes) froze the heartbeat and
+# made a working daemon indistinguishable from a wedged one —
+# 2026-11-01, turn 1793588978983: the answer had played at +84 s
+# and the turn was still closing when an observer, seeing a
+# 197 s-old heartbeat and a silent journal, restarted the daemon
+# at +198 s and the record was lost.
+HEARTBEAT_S = 10.0
 # The processed-id cursor is bounded: the queue is append-only in
 # practice, so 500 ids reach far beyond any realistic rewrite, and
 # pruning never drops an id still present in the queue read.
@@ -181,11 +192,35 @@ def _load_state() -> dict:
     return {"done": 0}
 
 
+_SAVE_LOCK = threading.Lock()
+
+
 def _save_state(state: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state))
-    tmp.replace(STATE_PATH)
+    # Serialized + a per-thread tmp name: the heartbeat thread and
+    # the main loop both write this file, and two writers sharing
+    # one tmp path could interleave into a corrupt state file.
+    with _SAVE_LOCK:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_PATH.with_suffix(f".tmp{threading.get_ident()}")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(STATE_PATH)
+
+
+def _heartbeat_loop() -> None:
+    """Refresh the state file's ts from a side thread (HEARTBEAT_S).
+
+    Carries the last saved cursor verbatim — the heartbeat proves
+    liveness, it never moves the cursor. A failed refresh is
+    dropped silently: the main loop's own saves remain the record,
+    and a heartbeat that could raise would be a new way to die."""
+    while True:
+        time.sleep(HEARTBEAT_S)
+        try:
+            state = _load_state()
+            state["ts"] = time.time()
+            _save_state(state)
+        except Exception:
+            pass
 
 
 def _record_gate_refusal(entry: dict, mode: str) -> None:
@@ -333,6 +368,8 @@ def main() -> int:
     except OSError:
         log("another daemon holds the lock; exiting")
         return 1
+    threading.Thread(target=_heartbeat_loop, daemon=True,
+                     name="heartbeat").start()
     state = _load_state()
     stored = state.get("done_ids")
     needs_seed = not isinstance(stored, list)
