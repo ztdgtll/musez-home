@@ -73,6 +73,14 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_hackathon_field",
+            "description": "How many projects are competing in the Meta AI Developer Hackathon right now: the live count of public GitHub repositories for the event, read from GitHub's public search API at call time. Use for any question about the size of the field — how many projects, repos or entries are competing, or how the field is looking.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "clean_studio",
             "description": "Start the robot vacuum cleaning the studio. Takes no arguments: which part of the home is the studio is configuration, not a choice for the model.",
             "parameters": {"type": "object", "properties": {}},
@@ -111,6 +119,12 @@ class DryRoom:
     def get_weather(self, date: str = None) -> dict:
         self.actions.append({"weather_lookup": True, "date": date})
         return _sample_weather(date)
+
+    def get_hackathon_field(self) -> dict:
+        self.actions.append({"hackathon_field_lookup": True})
+        return {"ok": True, "projects": 512,
+                "event": "Meta AI Developer Hackathon",
+                "source": "dry-run sample data"}
 
     def clean_studio(self) -> dict:
         self.actions.append({"clean_studio": True})

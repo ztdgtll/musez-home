@@ -24,6 +24,14 @@ Same dispatch contract as `DryRoom` (tools.py), against the live room:
   with hourly precipitation probability for one date from the same
   feed. Feed problems come back as {"ok": False, ...} tool results —
   a weather lookup never raises into the turn.
+- `get_hackathon_field` reads the live size of the hackathon's
+  field — the total count of public GitHub repositories for the
+  event — from GitHub's public search API, no credentials, at call
+  time (the count moves as projects appear, so it is never cached
+  or hard-coded). API problems come back as {"ok": False, ...}
+  tool results, and the room keeps no count at all: a failed lookup
+  can never leak a stale or invented number into an answer or a
+  wall card.
 - `say` routes into the turn's speech sink, so an acknowledgement is
   spoken in order, inside the same turn, not as a rival response.
 - `clean_studio` asks the injected Roborock client (bridge/
@@ -232,6 +240,39 @@ class HourlyWxRunner:
             return None
 
 
+class GitHubFieldRunner:
+    """The live size of the hackathon field: the total count of
+    public GitHub repositories matching the event's search, from
+    GitHub's public search API — no credentials, read at call time.
+
+    Returns the validated `total_count` int; raises on ANY problem
+    (network, HTTP, malformed payload, a count that is not an int),
+    so the room can turn the failure into an error result and keep
+    no number at all. GitHub refuses API requests without a
+    User-Agent, so the request always carries one."""
+
+    URL = ("https://api.github.com/search/repositories"
+           "?q=meta-ai-developer-hackathon&per_page=1")
+    USER_AGENT = "musez-home-bridge"
+
+    def __init__(self, opener=None, timeout: int = 10):
+        self._open = opener or (
+            lambda req: urllib.request.urlopen(req, timeout=timeout))
+
+    def __call__(self) -> int:
+        req = urllib.request.Request(self.URL, headers={
+            "User-Agent": self.USER_AGENT,
+            "Accept": "application/vnd.github+json",
+        })
+        with self._open(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        count = data.get("total_count") if isinstance(data, dict) else None
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError(
+                f"search reply carries no usable total_count: {count!r}")
+        return count
+
+
 _DAILY_KEYS = ("time", "temperature_2m_max", "temperature_2m_min",
                "precipitation_probability_max", "weathercode")
 
@@ -274,12 +315,14 @@ class StudioRoom:
     """The bridge's Room against the real studio. One instance per turn."""
 
     def __init__(self, turn: int, weather_runner=None,
-                 speak=None, hourly_runner=None, roborock_client=None):
+                 speak=None, hourly_runner=None, roborock_client=None,
+                 field_runner=None):
         self.turn = turn
         self._weather = weather_runner or FastWxRunner()
         self._hourly = hourly_runner  # None = no hourly detail available
         self._speak = speak
         self._roborock = roborock_client or default_client()
+        self._field = field_runner or GitHubFieldRunner()
         # Scene candidates recorded by set_wall_scene (validated, in
         # call order; the runner composes the turn's ONE final scene
         # from the last one) and the scenes validation turned away.
@@ -289,6 +332,12 @@ class StudioRoom:
         # discipline; a plan outranks a card at composition time.
         self.plan_scenes: list[dict] = []
         self.weather = None
+        # The hackathon field result of THIS turn, set only by a
+        # successful get_hackathon_field call (same discipline as
+        # `weather`): scene composition reads it for the field
+        # card, and a failed lookup leaves it None — no card, and
+        # no number anywhere in the turn.
+        self.field = None
 
     def set_wall_scene(self, title: str, line1: str = "", line2: str = "") -> dict:
         """Record the turn's scene candidate. Does NOT write the wall:
@@ -371,6 +420,33 @@ class StudioRoom:
             "source": "Open-Meteo (Tamarac, FL), via fastwx.sh",
         }
         return self.weather
+
+    def get_hackathon_field(self) -> dict:
+        """The live count of projects competing in the hackathon,
+        read from GitHub's public search API at call time (the
+        field grows by the hour — the number is never cached or
+        hard-coded). The successful result is kept on `self.field`
+        for scene composition; any failure returns
+        {"ok": False, "error": ...} and leaves `self.field` None,
+        so a turn whose lookup failed has no number to speak or
+        show — the model answers without one instead of inventing
+        it."""
+        try:
+            count = self._field()
+        except Exception as e:
+            return {"ok": False,
+                    "error": f"hackathon field lookup failed: {e}"}
+        if (not isinstance(count, int) or isinstance(count, bool)
+                or count < 0):
+            return {"ok": False,
+                    "error": "hackathon field lookup returned an "
+                             f"unusable count: {count!r}"}
+        self.field = {
+            "projects": count,
+            "event": "Meta AI Developer Hackathon",
+            "source": "GitHub public search API",
+        }
+        return {"ok": True, **self.field}
 
     def say(self, text: str) -> dict:
         if self._speak is None:

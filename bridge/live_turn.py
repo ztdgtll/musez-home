@@ -303,6 +303,8 @@ def run_live_turn(transcript: str, turn_id: int, *,
         wall_outcome = "tool_scene"
     elif room.weather is not None:
         wall_outcome = "weather"
+    elif room.field is not None:
+        wall_outcome = "field"
     elif lines:
         wall_outcome = "sentences"
     else:

@@ -142,6 +142,18 @@ def compose_scene(name: str, room: StudioRoom, sink: StudioSink,
         if w.get("precip_prob_max") is not None:
             parts.append(f"{labels[2]} {w['precip_prob_max']:.0f}%")
         return "Tamarac weather", [line1, " · ".join(parts)]
+    if room.field is not None:
+        # The field card: the count the API returned THIS turn,
+        # composed like the weather card — the model may still
+        # have set its own scene above, which wins as always.
+        # Bridge-composed line text follows the turn's language;
+        # the title stays English, like every scene title.
+        n = room.field.get("projects")
+        if lang == "en":
+            line1 = f"{n} projects competing"
+        else:
+            line1 = f"{n} proyectos compitiendo"
+        return "THE FIELD", [line1, "Meta AI Developer Hackathon"]
     if sink.sentences:
         lines = [_truncate(s, SCENE_LINE_MAX) for s in sink.sentences[:2]]
         return ("Raspberry Pi" if name == "knowledge" else ""), lines
