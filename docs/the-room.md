@@ -79,6 +79,35 @@ references):
 - **Imagery** is rectangular, large, with softly diffused edges — no
   repeated circles competing with the one circle that matters.
 
+## The voice
+
+The room is used by talking, so the spoken reply is designed with
+the same discipline as the wall:
+
+- **One gesture.** Voice and wall land together, in a single
+  dispatch under the turn's own id: the scene is not a subtitle
+  for the voice, and the voice is not a narration of the scene —
+  they are one answer arriving on two surfaces at once.
+- **Never silence without a sign of life.** The moment a request
+  ends, the room acknowledges it — a thinking state on the wall
+  and a short spoken receipt — and if a turn runs long, progress
+  lines keep arriving. A silent room reads as a broken room; this
+  one learned that from real failures.
+- **A reply is not done until it is heard.** A watchdog verifies,
+  from evidence on the Pi, that every spoken turn actually
+  played through the speaker. If one didn't, the system says so
+  and recovers: an answer that never sounded is treated as an
+  answer that never happened.
+- **Sentences, not paragraphs.** Replies are composed to be
+  spoken — closed sentences, in order, playback starting at
+  sentence zero while the rest stream in behind. Text written
+  for eyes reads badly out loud; this text is written for ears.
+- **One voice, every body.** The room speaks with the same voice
+  as the assistant on the builder's phone and computer, in the
+  language of the request — Spanish in daily life, English when
+  asked. The room is not a second assistant with a second
+  character; it is the same one, standing somewhere new.
+
 ## The body, today
 
 A Raspberry Pi 5 runs the room: the projected wall (hosted on
