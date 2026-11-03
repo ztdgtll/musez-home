@@ -1,6 +1,6 @@
 # MuseZ Home
 
-A voice bridge for a real room: the **Meta Model API** (Muse Spark, streaming) drives a Raspberry Pi ambient wall display and a room speaker, so a spoken request becomes a spoken answer and an on-wall scene — every stage of every turn timed and logged. Measured, not promised.
+A voice bridge for a real room: the **Meta Model API** (Muse Spark, streaming) drives a Raspberry Pi ambient wall display and a room speaker, so a spoken request becomes a spoken answer and an on-wall scene — every stage of every turn timed and logged.
 
 Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) — Indie Developer track, **Build for Your World** theme.
 
@@ -21,6 +21,14 @@ My assistant lives on my phone and on my computer: the same voice and the same m
 ## What it does
 
 You say "Hey Muse" in the studio. The room listens, transcribes locally, and sends the text to Muse Spark through the Meta Model API with function calling wired to the room's real tools (wall scenes, voice replies, live data). Spark streams back; the bridge cuts the stream into sentences as they close and composes the spoken reply incrementally. When the turn ends, the bridge dispatches it in a single pass through the room's existing response path — playback starts at sentence 0 while the remaining sentences stream in behind it — and the turn's one wall scene lands with the voice, under the turn's own id. Until a speculative renderer exists, the voice-start numbers in this repo are computed from the full turn, not from its first sentence. Every stage of every turn is timed and logged, because for voice in a room, **latency is the product**. The four turns in the demo — weather, a day plan, the live field count, a robot dispatch — are examples, not a feature list: the same loop answers open-ended spoken requests on any topic, and new abilities arrive as new tools, not rebuilds.
+
+## How Meta AI powers this room
+
+Every spoken turn runs on Meta's models through the Meta Model API:
+
+- **Muse Spark** (`muse-spark-1.3`) is the first responder. It streams, and its function calls drive the room's real tools — live weather, wall scenes, the day-plan infographic, a live GitHub field count and a robot dispatch. Its first complete sentence is speakable in about two seconds at the model stage, which is what makes a spoken room feel alive.
+- **Muse Wonder** (`muse-wonder-1.0`) is the escalation target. When a turn needs deeper reasoning, Spark hands it over mid-turn through an internal escalate call — most visibly the Saturday plan, which Wonder structures into the timeline the wall then draws with exact times and numbers.
+- Both models share one API and one tool-calling contract, so escalation is a hand-off inside a single system, not a second integration. Every stage of every turn — transcription, first token, first sentence, tool calls, speech — is timed and logged; the records live in `experiments/results/`.
 
 ## What was built during the hackathon (Oct 26 – Nov 4, 2026)
 
