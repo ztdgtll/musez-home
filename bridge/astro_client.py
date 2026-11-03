@@ -27,13 +27,17 @@ Two implementations ship:
   (no extra dependency, same transport shape as the room's other
   runners). Firing the URL presses the Voice Monkey virtual
   trigger, which runs the Alexa routine that sends Astro to the
-  destination's viewpoint. Success is reported ONLY on HTTP 200;
-  anything else raises. With no URL at all the client reports
+  destination's viewpoint. Success is reported on any HTTP 2xx
+  answer; a transient failure (a transport error or a non-2xx
+  answer) is retried once after a short pause, and only an answer
+  the endpoint actually confirmed ever counts as a dispatch. With
+  no URL at all the client reports
   itself unavailable, mirroring the Roborock real client.
 """
 
 from __future__ import annotations
 
+import time
 import urllib.request
 
 UNAVAILABLE_ERROR = "astro client unavailable"
@@ -68,11 +72,32 @@ class RealAstroClient:
 
     The opener is injectable for tests, like the room's other
     urllib runners; the URL is deliberately kept out of every
-    error this client raises — it carries a secret token."""
+    error this client raises — it carries a secret token.
 
-    def __init__(self, opener=None, timeout: int = 10) -> None:
+    A trigger press is idempotent (the same routine, the same
+    destination), so one transient failure — a dropped connection,
+    a timeout, a brief 5xx — is retried once after a short pause.
+    Success still means the endpoint confirmed with a 2xx answer;
+    an unconfirmed press is never reported as a dispatch."""
+
+    #: Attempts per dispatch (the first try plus one retry) and the
+    #: pause between them.
+    MAX_ATTEMPTS = 2
+    RETRY_DELAY_S = 1.5
+
+    def __init__(self, opener=None, timeout: int = 10,
+                 sleeper=None) -> None:
         self._open = opener or (
             lambda req: urllib.request.urlopen(req, timeout=timeout))
+        self._sleep = sleeper or time.sleep
+
+    def _fire(self, url) -> int:
+        req = urllib.request.Request(url, method="GET")
+        with self._open(req) as resp:
+            status = getattr(resp, "status", None)
+            if status is None:
+                status = resp.getcode()
+        return status
 
     def send_to(self, destination, url) -> dict:
         if not url:
@@ -81,16 +106,21 @@ class RealAstroClient:
             # The token rides in the URL: never send it in cleartext.
             raise AstroClientUnavailable(
                 f"{UNAVAILABLE_ERROR}: trigger URL is not HTTPS")
-        req = urllib.request.Request(url, method="GET")
-        with self._open(req) as resp:
-            status = getattr(resp, "status", None)
-            if status is None:
-                status = resp.getcode()
-        if status != 200:
-            raise RuntimeError(
+        last_error: Exception | None = None
+        for attempt in range(self.MAX_ATTEMPTS):
+            if attempt:
+                self._sleep(self.RETRY_DELAY_S)
+            try:
+                status = self._fire(url)
+            except Exception as exc:  # transport failure: retry once
+                last_error = exc
+                continue
+            if 200 <= status < 300:
+                return {"ok": True, "status": "dispatched",
+                        "destination": destination}
+            last_error = RuntimeError(
                 f"astro trigger endpoint answered HTTP {status}")
-        return {"ok": True, "status": "dispatched",
-                "destination": destination}
+        raise last_error
 
 
 def default_client() -> RealAstroClient:

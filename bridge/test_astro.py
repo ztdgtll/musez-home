@@ -191,18 +191,62 @@ class RealAstroClientTests(unittest.TestCase):
         self.assertEqual(seen, [FAKE_STUDIO_URL])
 
     def test_non_200_is_a_failure_not_a_success(self):
-        client = RealAstroClient(opener=lambda req: _FakeResponse(500))
+        client = RealAstroClient(opener=lambda req: _FakeResponse(500),
+                                 sleeper=lambda s: None)
         with self.assertRaises(RuntimeError) as caught:
             client.send_to("studio", FAKE_STUDIO_URL)
         self.assertIn("500", str(caught.exception))
         # The failing URL (with its token) stays out of the error.
         self.assertNotIn("FAKE-TOKEN", str(caught.exception))
 
+    def test_http_202_is_a_successful_dispatch(self):
+        client = RealAstroClient(opener=lambda req: _FakeResponse(202))
+        result = client.send_to("studio", FAKE_STUDIO_URL)
+        self.assertEqual(result, {"ok": True, "status": "dispatched",
+                                  "destination": "studio"})
+
+    def test_transient_transport_error_is_retried(self):
+        calls = []
+        delays = []
+
+        def opener(req):
+            calls.append(req.full_url)
+            if len(calls) == 1:
+                raise urllib.error.URLError("connection reset")
+            return _FakeResponse(200)
+
+        client = RealAstroClient(opener=opener, sleeper=delays.append)
+        result = client.send_to("studio", FAKE_STUDIO_URL)
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [FAKE_STUDIO_URL, FAKE_STUDIO_URL])
+        self.assertEqual(delays, [RealAstroClient.RETRY_DELAY_S])
+
+    def test_transient_500_is_retried(self):
+        statuses = iter([500, 200])
+        client = RealAstroClient(
+            opener=lambda req: _FakeResponse(next(statuses)),
+            sleeper=lambda s: None)
+        result = client.send_to("studio", FAKE_STUDIO_URL)
+        self.assertTrue(result["ok"])
+
+    def test_persistent_failure_raises_after_two_attempts(self):
+        calls = []
+
+        def opener(req):
+            calls.append(req.full_url)
+            return _FakeResponse(503)
+
+        client = RealAstroClient(opener=opener, sleeper=lambda s: None)
+        with self.assertRaises(RuntimeError) as caught:
+            client.send_to("studio", FAKE_STUDIO_URL)
+        self.assertIn("503", str(caught.exception))
+        self.assertEqual(len(calls), RealAstroClient.MAX_ATTEMPTS)
+
     def test_transport_error_propagates_for_the_room_to_convert(self):
         def opener(req):
             raise urllib.error.URLError("no route to host")
 
-        client = RealAstroClient(opener=opener)
+        client = RealAstroClient(opener=opener, sleeper=lambda s: None)
         with self.assertRaises(urllib.error.URLError):
             client.send_to("studio", FAKE_STUDIO_URL)
 
