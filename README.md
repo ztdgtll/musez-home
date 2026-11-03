@@ -4,15 +4,15 @@ A voice bridge for a real room: the **Meta Model API** (Muse Spark, streaming) d
 
 Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) — Indie Developer track, **Build for Your World** theme.
 
-> **Status — Oct 29, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probes run 2026-10-29 (bare API stage, then through the production path) — results in `experiments/results/`. Room integration (listener → bridge) lands Oct 31 – Nov 1.
+> **Status — Nov 3, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probes run 2026-10-29 (bare API stage, then through the production path) — results in `experiments/results/`. The room integration (listener → bridge) landed Oct 31 – Nov 1, and real room turns through the live source are recorded in `experiments/results/bridge-live.jsonl`. The demo was filmed in the room on Nov 2, and the project was submitted on Nov 3.
 
 ## The proof, up front
 
 - **Models** — `muse-spark-1.3` answers first: streaming, with the room's tools offered as function calls. When a turn needs deeper reasoning, Spark hands it to `muse-wonder-1.0` through an internal `escalate` call, before answering — Wonder is the escalation target, never the first responder. The hand-off is covered, not silent: Spark words a one-sentence acknowledgement inside the `escalate` call itself (validated by the bridge, with a fixed fallback), and the room speaks it immediately — same voice, same transport, no wall scene — while Wonder works, instead of the ~8 s of dead air the production-path probe measured on escalated turns.
 - **Room tools the models can call** — `get_weather` (Tamarac, FL: today, a 7-day forecast, hourly precipitation), `set_wall_scene` (a title and up to two lines, validated against the wall's design budget before they can land), `set_day_plan` (a structured day-plan timeline), `clean_studio` (starts the robot vacuum cleaning the studio), `call_astro` (sends Astro, the household robot, to a destination in the home to bring or take away a small item — via a Voice Monkey trigger and an Alexa routine; setup in [`docs/astro-setup.md`](docs/astro-setup.md)), and `say` (a spoken acknowledgement inside the turn).
-- **Measured — through the bridge's own production path** (Oct 29, 2026; the bridge's real client, system prompt and tool schemas, tools dispatched at their measured latencies, n = 5 per arm, 0 errors — the model stage of real bridge turns, **not** end-to-end room turns: STT, TTS and transport land with the room integration): Spark's first token *is* its first complete sentence at median **1.8 s** on both weather and knowledge turns; full Spark turns run **2.7–5.8 s**. An escalated planning turn hears Wonder's first sentence at **8.4 s** (median) and delivers the full plan in **29.1 s** — the measured reason Wonder only receives escalations. An earlier bare-prompt probe the same day (n = 10, no production request shaping) measured Spark's first token at 3.6 s: the gap is the production configuration, and the bare numbers survive only as that comparison. Full results: [`experiments/results/latency-live-prod-2026-10-29.md`](experiments/results/latency-live-prod-2026-10-29.md) (bare probe: [`latency-live-2026-10-29.md`](experiments/results/latency-live-2026-10-29.md)).
-- **The baseline it replaces** — the room's pre-event chat path: median transcript → first audio **50.9 s** (n = 7, measured 2026-10-23). Bridge room turns will be published on the same definition once the Oct 31 – Nov 1 integration lands.
-- **Demo video** — lands Nov 4.
+- **Measured — through the bridge's own production path** (Oct 29, 2026; the bridge's real client, system prompt and tool schemas, tools dispatched at their measured latencies, n = 5 per arm, 0 errors — the model stage of real bridge turns, **not** end-to-end room turns; end-to-end room turns after the Oct 31 – Nov 1 integration are published separately in `experiments/results/bridge-live.jsonl`): Spark's first token *is* its first complete sentence at median **1.8 s** on both weather and knowledge turns; full Spark turns run **2.7–5.8 s**. An escalated planning turn hears Wonder's first sentence at **8.4 s** (median) and delivers the full plan in **29.1 s** — the measured reason Wonder only receives escalations. An earlier bare-prompt probe the same day (n = 10, no production request shaping) measured Spark's first token at 3.6 s: the gap is the production configuration, and the bare numbers survive only as that comparison. Full results: [`experiments/results/latency-live-prod-2026-10-29.md`](experiments/results/latency-live-prod-2026-10-29.md) (bare probe: [`latency-live-2026-10-29.md`](experiments/results/latency-live-2026-10-29.md)).
+- **The baseline it replaces** — the room's pre-event chat path: median transcript → first audio **50.9 s** (n = 7, measured 2026-10-23). Bridge room turns are published on the same definition in `experiments/results/bridge-live.jsonl`.
+- **Demo video** — filmed in the real room on Nov 2, 2026 and submitted with the project on Nov 3.
 
 ## Why
 
@@ -35,7 +35,7 @@ Every spoken turn runs on Meta's models through the Meta Model API:
 - The **bridge**: transcript → Meta Model API (Muse Spark streaming + function calling) → sentence-chunked speech and wall scenes, with escalation to **Muse Wonder** for turns that need deeper reasoning.
 - The **latency probe and budget**: per-stage timing (first token, first complete sentence, TTS render, playback dispatch), published as all points + median + range — a p95 is only claimed on ≥ 30 warm calls per arm.
 - The tool layer that lets the models act on the room: wall scene control, voice reply dispatch, and live-data tools.
-- The **studio integration**: the bridge loop driving the room's real surfaces — tool calls that act on the wall through the Pi's guarded state writer, and speech delivered through the studio's existing response transport (same voice, same player) — verified end to end in the room with the mock source; the live-source wiring is the Oct 31 – Nov 1 step (see Status above).
+- The **studio integration**: the bridge loop driving the room's real surfaces — tool calls that act on the wall through the Pi's guarded state writer, and speech delivered through the studio's existing response transport (same voice, same player) — verified end to end in the room first with the mock source, then with the live Meta source after the Oct 31 – Nov 1 wiring; the live room turns are recorded in `experiments/results/bridge-live.jsonl`.
 - This documentation, the measured results, and the demo.
 
 ## The room it runs in
@@ -54,7 +54,7 @@ The split below is the submission's claim, stated once: the bridge is the work o
 | Live Meta Model API source, Spark → Wonder escalation | `bridge/meta_source.py` | Offline tests with a fake transport (`bridge/test_meta_source.py`); live probe, Oct 29 — 20 calls, 0 errors (`experiments/results/probe-live-2026-10-29.jsonl`) |
 | Tool layer (schemas + dispatch contract) | `bridge/tools.py` | The five tools above; dispatch never raises — failures return `{"ok": false}` for the model to react to |
 | Day-plan composer (structured infographic payload) | `bridge/day_plan.py` | `bridge/test_day_plan.py`; deterministic composer over the real forecast shape, no model required |
-| Studio room, sink and runner (the room adapter) | `bridge/studio_room.py`, `bridge/studio_sink.py`, `bridge/studio_turn.py`, `bridge/wall_apply.py` | Verified end to end in the room with the mock source, Oct 27 — turn records in `experiments/results/bridge-studio-mock.jsonl` (incl. an ON-hours run: scene read back on the wall, sentence 0 played) |
+| Studio room, sink and runner (the room adapter) | `bridge/studio_room.py`, `bridge/studio_sink.py`, `bridge/studio_turn.py`, `bridge/wall_apply.py` | Verified end to end in the room with the mock source, Oct 27 — turn records in `experiments/results/bridge-studio-mock.jsonl` (incl. an ON-hours run: scene read back on the wall, sentence 0 played) — and with the live source after the integration, in `experiments/results/bridge-live.jsonl` |
 | Latency probe + results | `experiments/latency_probe.py`, `experiments/results/` | Mock runs and the live run of Oct 29, raw records alongside the summaries |
 | Documentation and demo script | `docs/`, this README | — |
 
@@ -65,7 +65,7 @@ The split below is the submission's claim, stated once: the bridge is the work o
 | Wall renderer + the wall's closed design system (design criteria closed 2026-10-15) | Renders the projected scenes; owns the scene vocabulary and the phase ladder (1 listening … 4 answer … 5 home) | The bridge never writes the wall directly — see `setstate.py` |
 | `setstate.py` (Pi, `~/pared/`) | The wall's only sanctioned write path; its guard enforces turn/phase order | Invoked by the Pi-side helper (`bridge/wall_apply.py`) with a validated payload: `--turn=<id> --phase=<n>`; rejections come back as exit code 4 and are never retried blind |
 | Turn minter (`setstate.py --mint-turn`) | Mints the turn ids every surface agrees on | One id per turn, minted before the turn runs; the same id threads the model calls, the wall write and the playback |
-| Listener (Pi, `~/pared-tools/listener.py`) | Wake word ("Hey Muse") + local STT → transcript | The Oct 31 – Nov 1 wiring feeds its transcripts to the bridge; until then the runner takes the transcript directly |
+| Listener (Pi, `~/pared-tools/listener.py`) | Wake word ("Hey Muse") + local STT → transcript | Since the Oct 31 – Nov 1 wiring, its transcripts feed the bridge; before that, the runner took the transcript directly |
 | `respond2.sh` + the Pi receiver/player (respond_recv → sayseq) | The room's response transport: TTS in the room's own voice (Warm, Spanish) and playback; writes the answer's scene at phase 4 | Exactly four arguments — title, line 1, line 2, full text — plus `RESPOND_TURN=<id>` in the environment; one dispatch per turn; the `LAUNCHED` line is the receipt |
 | `fastwx.sh` (`~/workspace/studio/`) | The room's Open-Meteo feed for Tamarac, FL | `get_weather` reads today + 7-day forecast + hourly precipitation through it |
 | Response watchdog (respwatch) | Verifies spoken replies actually played | The bridge runner reads the same sayseq/playgate logs to record each turn's playback outcome |
@@ -84,7 +84,7 @@ sequenceDiagram
     participant S as Sink (bridge/studio_sink.py)
     participant P as respond2 + Pi player (pre-existing)
     participant W as Wall via setstate.py (pre-existing)
-    L->>R: transcript (wiring lands Oct 31 – Nov 1)
+    L->>R: transcript
     R->>W: mint turn id T
     R->>B: run turn under T
     B->>M: stream — muse-spark-1.3, room tools + escalate offered
@@ -144,10 +144,9 @@ a deterministic composer builds the same payload from the forecast
 with no model involved, so the demo's plan never depends on
 free-form generation. A plan rides the turn's single wall write at
 flush time, alongside a card summary composed from the same payload.
-**Status:** the bridge validates and ships the payload today; the
-wall page does not render the `plan` kind yet — rendering is a
-separate prototype step, and until it lands the card summary is what
-the wall shows.
+**Status:** rendered in the room — the Saturday plan in the demo
+(Nov 2) is this payload drawn on the wall as a timeline infographic,
+with the card summary composed from the same data.
 
 ## Latency budget (targets vs measured)
 
@@ -156,7 +155,7 @@ the wall shows.
 | Spark: first token | ≤ 2 s | median 1.76–1.81 s through the production path (n = 5 per arm, Oct 29) — met at median; worst point 2.16 s |
 | Spark: first complete sentence (streaming) | ≤ 4 s | median 1.8 s, both classes (production path, Oct 29) — met |
 | TTS render, first sentence (room transport) | ≤ 3 s | baseline ~1.97 s (7-word sentence) |
-| **Perceived total to first voice** | **≤ ~12 s** | Room validation lands Oct 31 – Nov 1; the measured model+TTS floor is ≈ 4.6 s (simple turns) to ≈ 7.7 s (weather turns) on the whole-turn basis — full budget in `docs/latency-budget.md` |
+| **Perceived total to first voice** | **≤ ~12 s** | End-to-end room turns after the integration are published in `experiments/results/bridge-live.jsonl` on the same transcript → first-audio definition; they run above the measured model+TTS floor (≈ 4.6 s simple turns to ≈ 7.7 s weather turns, whole-turn basis) because they also include local STT, the room transport and the single-dispatch design — full budget in `docs/latency-budget.md` |
 
 The baseline this replaces — the pre-event chat path — measured a median transcript → first audio of 50.9 s (n = 7, 2026-10-23). Measured results live in `experiments/results/`. If a stage misses its target, the writeup says so and shows the number.
 
@@ -169,6 +168,19 @@ The demo's closing number — how many projects are competing in this hackathon 
 - `bridge/` — the bridge code (Spark client, sentence chunker, tool dispatch).
 - `experiments/` — the latency probe (`latency_probe.py`) and its measured results.
 - `docs/` — design notes, including the latency budget rationale.
+
+## Try it without the studio (simulated room)
+
+No network, no API key, no Raspberry Pi: a fake model source drives the
+same turn loop, tool dispatch and sentence chunker the real room uses.
+The printed transcripts stand in for local STT output, a dry-run room
+records the tool calls instead of touching a real room, and the sink
+prints each sentence and scene instead of speaking and projecting them.
+It is a console simulation of the loop — not a rendered wall or a voice.
+
+```bash
+python3 -m bridge.mock_demo
+```
 
 ## Running the latency probe
 
