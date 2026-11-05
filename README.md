@@ -6,6 +6,8 @@ Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) �
 
 > **Status — Nov 3, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probes run 2026-10-29 (bare API stage, then through the production path) — results in `experiments/results/`. The room integration (listener → bridge) landed Oct 31 – Nov 1, and real room turns through the live source are recorded in `experiments/results/bridge-live.jsonl`. The demo was filmed in the room on Nov 2, and the project was submitted on Nov 3.
 
+> **Update — Nov 5, 2026 (after submission):** Muse Voice launched today, and the studio's Raspberry Pi now runs live voice calls through the Gadget SDK — verified end to end. Details at the end of this README.
+
 ## The proof, up front
 
 - **Models** — `muse-spark-1.3` answers first: streaming, with the room's tools offered as function calls. When a turn needs deeper reasoning, Spark hands it to `muse-wonder-1.0` through an internal `escalate` call, before answering — Wonder is the escalation target, never the first responder. The hand-off is covered, not silent: Spark words a one-sentence acknowledgement inside the `escalate` call itself (validated by the bridge, with a fixed fallback), and the room speaks it immediately — same voice, same transport, no wall scene — while Wonder works, instead of the ~8 s of dead air the production-path probe measured on escalated turns.
