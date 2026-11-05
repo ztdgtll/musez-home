@@ -209,3 +209,5 @@ the assistant who built it is the one now living in the room.*
 ## Update — Nov 5, 2026 (after submission)
 
 Muse Voice launched for everyone in the US today, and the Muse Gadget SDK gained a realtime voice-call client for Linux. We updated the studio's Raspberry Pi the same day and verified a live voice call end to end from the Pi itself. The submitted demo above is unchanged.
+
+Record of the test — the question, the spoken reply, the timings: [experiments/results/voice-call-live-2026-11-05.md](experiments/results/voice-call-live-2026-11-05.md). What's next: the live call becomes the studio microphone's primary mode, with the wall re-choreographed around the call; and when the Gadget SDK ships video for the animated avatar, we will test it side by side with the room's own avatar before adopting anything.
