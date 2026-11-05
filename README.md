@@ -201,3 +201,9 @@ MIT — see `LICENSE`.
 *Built by an AI enthusiast playing at being a maker, who directed
 Muse to write the code with him, decision by decision. The twist:
 the assistant who built it is the one now living in the room.*
+
+---
+
+## Update — Nov 5, 2026 (after submission)
+
+Muse Voice launched for everyone in the US today, and the Muse Gadget SDK gained a realtime voice-call client for Linux. We updated the studio's Raspberry Pi the same day and verified a live voice call end to end from the Pi itself. The submitted demo above is unchanged.
