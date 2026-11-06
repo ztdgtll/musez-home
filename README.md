@@ -7,6 +7,8 @@ Built for the **Meta Global AI Developer Hackathon** (Oct 26 – Nov 4, 2026) �
 > **Status — Nov 3, 2026:** Live Meta Model API: credits applied 2026-10-29; live latency probes run 2026-10-29 (bare API stage, then through the production path) — results in `experiments/results/`. The room integration (listener → bridge) landed Oct 31 – Nov 1, and real room turns through the live source are recorded in `experiments/results/bridge-live.jsonl`. The demo was filmed in the room on Nov 2, and the project was submitted on Nov 3.
 
 > **Update — Nov 5, 2026 (after submission):** Muse Voice launched today, and the studio's Raspberry Pi now runs live voice calls through the Gadget SDK — verified end to end. Details at the end of this README.
+>
+> **Update — Nov 6, 2026 (after submission):** a night of live-call research in the room — full-duplex verified, the send path proven bit-for-bit, a server-side input-suppression event characterized, and echo-cancellation alignment measured at ~280 ms. Details at the end of this README.
 
 ## The proof, up front
 
@@ -213,3 +215,11 @@ Muse Voice launched for everyone in the US today, and the Muse Gadget SDK gained
 Record of the test — the question, the spoken reply, the timings: [experiments/results/voice-call-live-2026-11-05.md](experiments/results/voice-call-live-2026-11-05.md). What's next: the live call becomes the studio microphone's primary mode, with the wall re-choreographed around the call; and when the Gadget SDK ships video for the animated avatar, we will test it side by side with the room's own avatar before adopting anything.
 
 **Later on Nov 5 — live-call fixes and three additions.** A software gain (×3) in the ALSA backend fixed a level defect found that night — the microphone's DSP output had dropped ~15 dB, and only very loud speech created turns; verified live in the room, normal-level phrases create turns again. The integrated room runner now also shows a distinct "working" state on the wall while a reply is being generated, animates the wall logo with the caller's voice levels during calls (mirroring the turn system's publisher), and shapes the microphone stream client-side so a mid-sentence pause no longer ends the turn early. These three additions are built and covered by an isolated dry test (33 checks); their live room verification is still pending. The code: [experiments/live-call/](experiments/live-call/) — the ALSA backend, the three runner iterations, and the dry test.
+
+---
+
+## Update — Nov 6, 2026 (after submission)
+
+The Nov 5 additions were verified live in the room that night — working state on the wall, the logo moving with the caller's voice, normal-volume turns in full-duplex — and the work continued into a full research session on the live call's failure modes. The send path is now proven bit-for-bit (a SHA-256 over exactly the audio whose send completed, inside a live session; 35,671/35,671 appends in a 25-minute continuous control). Pre-dispatcher logging surfaced a server-side verdict we had been blind to — `hatch.voice.input_suppressed`, "side speech: no turn" — which separates the failures into suppression (frequent, criteria unpublished) and a rarer total input silence that has not returned since it was instrumented for. Echo cancellation was measured rather than assumed: the far-end reference reaches the chip now, but it leads the echo by ~280 ms in the current two-route topology — beyond the chip's compensation range — and the native single-clock route was wired and tested in the room.
+
+Full record, with what each result does and does not prove: [experiments/results/voice-call-live-2026-11-06.md](experiments/results/voice-call-live-2026-11-06.md). The instrumented runner is [`experiments/live-call/voice_call_room4.py`](experiments/live-call/voice_call_room4.py).
