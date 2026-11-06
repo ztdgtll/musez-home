@@ -9,7 +9,9 @@ Capture: arecord -D plughw:2,0 -c 2 -r 16000 (reSpeaker XVF3800 at its
 native rate — the exact recipe the room's listener uses). Python upsamples
 16k -> 24k (linear, 3:2) and feeds, per 40 ms block, whichever channel has
 the higher RMS; both channels' RMS is logged so the choice is observable.
-Playback: pw-cat --playback into PipeWire's default sink (KT USB Audio).
+Playback: pw-cat --playback --target PLAYER_TARGET (the array's own
+sink since 2026-11-06; before that, PipeWire's default sink — the KT
+USB DAC — which is no longer connected to the speakers).
 Direct ALSA access to card 3 is impossible in this room: WirePlumber holds
 the device permanently (any aplay -D plughw:3,0 fails with "Device or
 resource busy"), which is why the first live-call tests were silent.
@@ -48,6 +50,22 @@ REF_DEVICE = "plughw:2,0"
 # XVF3800's own sink, exactly like the room playback route.
 REF_TARGET = ("alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array"
               "_114993701262800818-00.analog-stereo")
+# Playback routing (2026-11-06): the speakers hang off the array's
+# own analog output (native speakerphone topology, wired by Javier),
+# so the player targets the array's sink EXPLICITLY — relying on
+# PipeWire's default sink is how the reply once went to a DAC that
+# was no longer connected to the speakers. If the route ever splits
+# (voice here, music via the KT DAC), this is the constant to move.
+PLAYER_TARGET = REF_TARGET
+# Far-end reference feed: OFF in the native topology. The feed was
+# built for the DAC topology, where the chip could not hear its own
+# playback. With the speakers on the array's own output the chip
+# references its playback internally — and the external copy became
+# a second, independently-clocked stream into the SAME sink: every
+# reply played twice with a small offset, the copy dropping frames
+# silently under contention. That is the choppiness heard on
+# 2026-11-06. Keep the machinery for a future DAC route; default off.
+REF_FEED = False
 CAPTURE_RATE = 16000
 # Software gain on the sent stream (2026-11-05): the XVF3800's DSP outputs
 # can sit ~15 dB lower than the room's earlier baseline (sent-stream floor
@@ -55,13 +73,74 @@ CAPTURE_RATE = 16000
 # provider VAD only fires when the user speaks very loudly. x3 lifts normal
 # speech back into the range that reliably created turns; peaks clamp.
 GAIN = 3
+# Automatic gain (2026-11-06, Javier's rule: the system adapts to his
+# voice, never the other way round — he speaks loud or soft, near or
+# far, and the stream must arrive healthy anyway, the way an iPad mic
+# just hears him). A slow AGC over the fixed gain: it measures each
+# 40 ms block of the picked channel; speech blocks steer the gain
+# toward TARGET_RMS (fast down when loud, slow up when quiet), blocks
+# under NOISE_GATE freeze it, and after ~2 s of quiet it relaxes back
+# to the base GAIN so room tone never pumps up into the VAD.
+TARGET_RMS = 1200
+NOISE_GATE = 80
+GAIN_MIN, GAIN_MAX = 1.0, 12.0
+# AGC enable (Astra review 2026-11-06): the AGC has a cliff at the
+# noise gate (constant rms 79 -> gain stays 3; 81 -> climbs to 12)
+# and on the Conference channel it is redundant — the DSP applies
+# its own AGC there. For controlled tests on ch0 the Python AGC is
+# OFF and the fixed GAIN applies; the AGC stays available for ch1
+# experiments, where the DSP offers no AGC.
+USE_AGC = False
+
+
+class _AutoGain:
+    def __init__(self) -> None:
+        self.gain = float(GAIN)
+        self._quiet_blocks = 0
+        self.clipped = 0
+
+    def process(self, samples):
+        raw = _rms(samples)
+        if raw > NOISE_GATE:
+            self._quiet_blocks = 0
+            desired = max(GAIN_MIN, min(GAIN_MAX, TARGET_RMS / raw))
+            if desired < self.gain:
+                self.gain += (desired - self.gain) * 0.5
+            else:
+                self.gain += (desired - self.gain) * 0.04
+        else:
+            self._quiet_blocks += 1
+            if self._quiet_blocks > 50:
+                self.gain += (GAIN - self.gain) * 0.02
+        g = self.gain
+        out = []
+        clip = 0
+        for s in samples:
+            v = int(s * g)
+            if v > 32767:
+                v = 32767
+                clip += 1
+            elif v < -32768:
+                v = -32768
+                clip += 1
+            out.append(v)
+        self.clipped = clip
+        return out
 # Fixed capture channel (2026-11-05, XVF3800 routing read via xvf_host):
 # ch0 = "Conference" output (AGC up to x32, ducks ~20 dB under playback),
 # ch1 = "ASR" output of the same auto-selected beam (no AGC, stable level).
 # The original per-block max-RMS pick stitched two differently processed
 # signals together and the provider VAD suffered; ASR is the channel the
 # vendor intends for speech recognition, so take it deterministically.
-CHANNEL = 1  # 0 = Conference, 1 = ASR
+CHANNEL = 0  # 0 = Conference, 1 = ASR
+# FLIPPED 1 -> 0 on 2026-11-06: during the morning's gate calls the
+# ASR channel read raw rms 22-79 while Javier shouted on top of the
+# array, while the Conference channel read 231-495 on the same
+# seconds — the ASR output had gone near-deaf and every call sent
+# near-silence (the listener, which has always used ch0, heard him
+# perfectly: wakes 0.74-0.86 and a clean 19 s gate capture). ch0's
+# known costs (AGC, ~20 dB duck under playback) are acceptable next
+# to a working conversation; the AGC above supervises the level.
 _BLOCK_SAMPLES = CAPTURE_RATE * FRAME_SAMPLES // SAMPLE_RATE  # 640 per 40 ms
 _BLOCK2_BYTES = _BLOCK_SAMPLES * 2 * 2  # two interleaved channels, PCM16
 
@@ -107,6 +186,7 @@ def _rms(samples) -> int:
 
 class AlsaAudio:
     def __init__(self) -> None:
+        self._agc = _AutoGain()
         self._capture: queue.Queue = queue.Queue(maxsize=8)
         self._playback: deque = deque()
         self._playback_bytes = 0
@@ -141,6 +221,13 @@ class AlsaAudio:
     def _capture_loop(self) -> None:
         stream = self._cap_proc.stdout
         frames = 0
+        # Accumulated per-window channel metrics (Astra review
+        # 2026-11-06): the old line printed ONE 40 ms block per 25,
+        # which can miss most of an intervention. Accumulate energy
+        # over the whole window and report its peak block too.
+        acc = [0, 0]
+        acc_n = 0
+        peak = [0, 0]
         while not self._stop.is_set():
             data = stream.read(_BLOCK2_BYTES)
             if not data or len(data) < _BLOCK2_BYTES:
@@ -148,11 +235,28 @@ class AlsaAudio:
             samples = struct.unpack(f"<{len(data) // 2}h", data)
             ch0, ch1 = samples[0::2], samples[1::2]
             frames += 1
+            for i, ch in enumerate((ch0, ch1)):
+                acc[i] += sum(s * s for s in ch)
+                r = _rms(ch)
+                if r > peak[i]:
+                    peak[i] = r
+            acc_n += len(ch0)
             if frames % 25 == 0:
-                print(f"[alsa] rms ch0={_rms(ch0)} ch1={_rms(ch1)}",
+                w0 = int((acc[0] / acc_n) ** 0.5) if acc_n else 0
+                w1 = int((acc[1] / acc_n) ** 0.5) if acc_n else 0
+                print(f"[alsa] rms ch0={w0} ch1={w1}"
+                      f" peak ch0={peak[0]} ch1={peak[1]}"
+                      f" gain={self._agc.gain:.2f} clip={self._agc.clipped}",
                       file=sys.stderr, flush=True)
+                acc = [0, 0]
+                acc_n = 0
+                peak = [0, 0]
             picked = ch1 if CHANNEL == 1 else ch0
-            gained = [max(-32768, min(32767, s * GAIN)) for s in picked]
+            if USE_AGC:
+                gained = self._agc.process(picked)
+            else:
+                gained = [max(-32768, min(32767, int(s * GAIN)))
+                          for s in picked]
             mono = _upsample_16k_to_24k(gained)
             try:
                 self._capture.put_nowait(mono)
@@ -189,7 +293,7 @@ class AlsaAudio:
             env["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
             err = open("/home/ztdgtll/voice-test/player.err", "ab")
             self._play_proc = subprocess.Popen(
-                ["pw-cat", "--playback", "-"],
+                ["pw-cat", "--playback", "--target", PLAYER_TARGET, "-"],
                 stdin=subprocess.PIPE, stderr=err,
                 user="ztdgtll", env=env, cwd="/home/ztdgtll")
         return self._play_proc
@@ -210,13 +314,23 @@ class AlsaAudio:
 
     def _playback_loop(self) -> None:
         while not self._stop.is_set():
+            # Write in ~200 ms chunks (up to 5 frames): one syscall
+            # per frame made the drain sensitive to scheduling jitter
+            # (a suspect in the SDK buffer-full deaths); a chunk is
+            # still far inside the SDK's 5 s playback budget.
             with self._playback_lock:
-                pcm = self._playback.popleft() if self._playback else None
-                if pcm is not None:
-                    self._playback_bytes -= len(pcm)
-            if pcm is None:
+                chunk = []
+                nbytes = 0
+                while self._playback and len(chunk) < 5:
+                    f = self._playback.popleft()
+                    chunk.append(f)
+                    nbytes += len(f)
+                if chunk:
+                    self._playback_bytes -= nbytes
+            if not chunk:
                 time.sleep(0.005)
                 continue
+            pcm = b"".join(chunk)
             try:
                 proc = self._ensure_player()
                 if proc is not self._hdr_for:
@@ -224,10 +338,11 @@ class AlsaAudio:
                     self._hdr_for = proc
                 proc.stdin.write(pcm)
                 proc.stdin.flush()
-                try:
-                    self._ref.put_nowait(pcm)
-                except queue.Full:
-                    pass
+                if REF_FEED:
+                    try:
+                        self._ref.put_nowait(pcm)
+                    except queue.Full:
+                        pass
             except (BrokenPipeError, OSError):
                 self._play_proc = None
                 self._hdr_for = None
@@ -248,6 +363,8 @@ class AlsaAudio:
         return self._ref_proc
 
     def _ref_loop(self) -> None:
+        if not REF_FEED:
+            return
         hdr_for = None
         while not self._stop.is_set():
             try:
