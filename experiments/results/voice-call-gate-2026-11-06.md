@@ -132,8 +132,8 @@ to every gate opening.
 
 ## Still open
 
-- **S** (`input_suppressed`): frequent, criteria unpublished, swings
-  with identical client configuration. The wedge (total input
+- **S** (`input_suppressed`): frequent, criteria unpublished;
+  verdicts alternate within single calls under one configuration. The wedge (total input
   silence) has not recurred since 2026-11-05 23:49; the counted
   protocol for its return stays armed.
 - The chosen spoken close phrase ("Ok bye Muse") is still untested
